@@ -10,6 +10,8 @@ license = "MIT"
 authors = ["Cody Wyatt Neiman (xangelix) <neiman@cody.to>"]
 repository = "https://github.com/xangelix/edirstat"
 
+# [patch.crates-io]
+# egui-table-kit = { path = "../egui-table-kit" }
 
 [profile.release]
 panic = "abort"
