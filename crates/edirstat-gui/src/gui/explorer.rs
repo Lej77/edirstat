@@ -640,6 +640,11 @@ impl GuiApp {
         let has_children = node.is_directory() && node.first_child != NO_INDEX;
         let is_selected = self.table_state.selected_rows.contains(node_idx);
 
+        // The exact rect of the expand/collapse arrow, captured during row layout
+        // so the row hitbox below can carve out just the arrow (egui gives the
+        // click to the last-registered overlapping widget, so overlap is fatal).
+        let mut arrow_rect = None;
+
         let horizontal_res = ui.horizontal(|ui| {
             // Indent padding
             #[allow(clippy::cast_precision_loss)]
@@ -665,6 +670,7 @@ impl GuiApp {
                     // Allocate an exact interactive rectangle
                     let (rect, response) =
                         ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::click());
+                    arrow_rect = Some(rect);
 
                     // Resolve responsive colors based on interaction states
                     let arrow_color = if response.hovered() {
@@ -748,14 +754,34 @@ impl GuiApp {
         // Get the bounding box of the whole row
         let rect = horizontal_res.response.rect;
 
-        // --- Offset the interaction hitbox strictly to the right of the expand button ---
-        let mut interactive_rect = rect;
-        #[allow(clippy::cast_precision_loss)]
-        let expand_button_width = (indent_level as f32).mul_add(22.0, 26.0);
-        interactive_rect.min.x += expand_button_width;
+        // Carve out only the expand arrow's hit zone from the row hitbox; the
+        // indent strip left of it gets its own interact zone so clicks there
+        // still select the row. Rows without children have a disabled
+        // placeholder arrow, so no carve-out is needed.
+        let (main_rect, strip_rect) = arrow_rect.map_or((rect, None), |arrow_rect| {
+            let strip = (arrow_rect.min.x > rect.min.x).then(|| {
+                egui::Rect::from_min_max(rect.min, egui::pos2(arrow_rect.min.x, rect.max.y))
+            });
+            let main = egui::Rect::from_min_max(
+                egui::pos2((arrow_rect.max.x + 4.0).min(rect.max.x), rect.min.y),
+                rect.max,
+            );
+            (main, strip)
+        });
 
         let row_id = ui.id().with(("tree_row", node_idx));
-        let response = ui.interact(interactive_rect, row_id, egui::Sense::click());
+        let response = ui.interact(main_rect, row_id, egui::Sense::click());
+        let strip_response = strip_rect
+            .map(|strip| ui.interact(strip, row_id.with("indent_strip"), egui::Sense::click()));
+
+        let hovered =
+            response.hovered() || strip_response.as_ref().is_some_and(egui::Response::hovered);
+        let clicked =
+            response.clicked() || strip_response.as_ref().is_some_and(egui::Response::clicked);
+        let secondary_clicked = response.secondary_clicked()
+            || strip_response
+                .as_ref()
+                .is_some_and(egui::Response::secondary_clicked);
 
         if is_selected {
             let fill_color = match get_current_theme() {
@@ -764,7 +790,7 @@ impl GuiApp {
                 AppTheme::Dark => ui.visuals().selection.bg_fill.linear_multiply(0.12),
             };
             ui.painter().rect_filled(rect, 4.0, fill_color);
-        } else if response.hovered() {
+        } else if hovered {
             let hover_color = match get_current_theme() {
                 AppTheme::HighContrast => egui::Color32::from_rgb(65, 65, 65),
                 AppTheme::Light => egui::Color32::from_rgb(225, 238, 254),
@@ -773,13 +799,12 @@ impl GuiApp {
             ui.painter().rect_filled(rect, 4.0, hover_color);
         }
 
-        // Handle selection on Left-Click or Right-Click (only outside of the expand button)
-        if response.clicked() {
+        // Handle selection on Left-Click or Right-Click (outside of the expand button)
+        if clicked {
             let modifiers = ui.input(|i| i.modifiers);
             self.table_state
                 .handle_row_selection(modifiers, node_idx as usize);
-        } else if response.secondary_clicked() && !self.table_state.selected_rows.contains(node_idx)
-        {
+        } else if secondary_clicked && !self.table_state.selected_rows.contains(node_idx) {
             self.table_state.selected_rows.clear();
             self.table_state.selected_rows.insert(node_idx);
             self.focus_node_idx = Some(node_idx);
@@ -789,6 +814,11 @@ impl GuiApp {
         response.context_menu(|ui| {
             self.draw_file_menu_contents(ui, snapshot);
         });
+        if let Some(strip_response) = strip_response {
+            strip_response.context_menu(|ui| {
+                self.draw_file_menu_contents(ui, snapshot);
+            });
+        }
 
         // Draw vertical indentation guidelines to visually track nested guidelines
         let painter = ui.painter();
