@@ -1315,8 +1315,42 @@ fn get_volume_path(path: &Path) -> Option<String> {
     }
 }
 
+/// Resolves the partition volume path from a mount file path
+#[cfg(target_os = "linux")]
+fn get_volume_path(path: &Path) -> Option<String> {
+    // Canonicalize the target path so symlinks and trailing slashes are resolved
+    let canonical_target = path.canonicalize().ok()?;
+
+    let mounts = std::fs::read_to_string("/proc/mounts").ok()?;
+
+    let mut best: Option<(PathBuf, String, usize)> = None;
+
+    for line in mounts.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 3 {
+            continue;
+        }
+
+        let device = parts[0];
+        // Canonicalize the mount point from /proc/mounts to match correctly
+        let Ok(mount_point) = PathBuf::from(parts[1]).canonicalize() else {
+            continue;
+        };
+
+        if canonical_target.starts_with(&mount_point) {
+            let depth = mount_point.as_os_str().len();
+            if best.as_ref().is_none_or(|b| depth > b.2) {
+                best = Some((mount_point, device.to_string(), depth));
+            }
+        }
+    }
+
+    let (_, device_path, _) = best?;
+    Some(device_path)
+}
+
 /// Resolves partition paths on non-Windows targets.
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 #[allow(clippy::unnecessary_wraps)]
 fn get_volume_path(path: &Path) -> Option<String> {
     Some(path.to_string_lossy().into_owned())
