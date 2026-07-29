@@ -137,7 +137,9 @@ impl TraversalEngine {
             // Build initial scan task
             let root_id = (0, 0); // Placeholder for root
             let root_metadata = fs::metadata(&root_path);
-            let root_file_id = root_metadata.as_ref().map_or(root_id, get_file_id);
+            let root_file_id = root_metadata.as_ref().map_or(root_id, |metadata| {
+                get_file_id(metadata, || std::borrow::Cow::Borrowed(root_path.as_ref()))
+            });
             let is_root_scan = root_path == std::path::Path::new("/");
             let expected_device_id = if same_filesystem || !is_root_scan {
                 root_metadata.as_ref().map(get_device_id).ok()

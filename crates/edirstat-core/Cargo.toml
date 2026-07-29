@@ -10,6 +10,9 @@ authors.workspace = true
 [package.metadata.cargo-shear]
 ignored = ["getrandom"]
 
+[features]
+stable = ["dep:file-id"] # Build on stable toolchain
+
 [dependencies]
 ahash = "0.8.12"
 arc-swap = "1.9.2"
@@ -20,6 +23,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.19"
 xgx_intern = "0.6.4"
 zstd = "0.13.3"
+
+[target.'cfg(windows)'.dependencies]
+file-id = { version = "0.2.3", optional = true }
 
 # ahash's runtime-rng pulls in getrandom, which needs the wasm_js backend on
 # wasm32-unknown-unknown
