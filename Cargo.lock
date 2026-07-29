@@ -1266,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "edirstat"
-version = "2.0.1"
+version = "2.0.1-extra.1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1291,7 +1291,7 @@ dependencies = [
 
 [[package]]
 name = "edirstat-core"
-version = "2.0.1"
+version = "2.0.1-extra.1"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -1308,7 +1308,7 @@ dependencies = [
 
 [[package]]
 name = "edirstat-gui"
-version = "2.0.1"
+version = "2.0.1-extra.1"
 dependencies = [
  "ahash",
  "anyhow",
