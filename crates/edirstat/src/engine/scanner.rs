@@ -1,3 +1,4 @@
+#![cfg(feature = "gui")]
 use std::{path::PathBuf, sync::Arc};
 
 use edirstat_core::state::SharedState;
