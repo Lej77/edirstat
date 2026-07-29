@@ -26,11 +26,13 @@ include = [
 ]
 
 [features]
-default = ["cli", "gui", "online"]
+default = ["cli", "gui", "windows_icon", "online"]
 online = ["edirstat-gui/online"]
 profile-tracy = ["tracy-client", "edirstat-gui/profile-tracy"]
-gui = ["dep:edirstat-gui", "dep:winresource", "dep:eframe", "dep:cli-or-gui"]
-cli = ["dep:clap"]
+cli = ["dep:clap", "mimalloc-rspack"]
+gui = ["dep:edirstat-gui", "dep:eframe", "dep:cli-or-gui"]
+windows_icon = ["dep:winresource"]
+
 unstable = [] # Expose unstable APIs
 stable = ["edirstat-core/stable"] # Build on stable toolchain
 
@@ -47,7 +49,7 @@ compact_str = "0.10.0"
 crc-fast = "1.10.0"
 crossbeam = "0.8.4"
 eframe = { version = "0.35.0", optional = true }
-mimalloc-rspack = { version = "0.2.4", features = ["v3"] }
+mimalloc-rspack = { version = "0.2.4", features = ["v3"], optional = true }
 parking_lot = { version = "0.12.5", features = ["hardware-lock-elision"] }
 rayon = "1.12.0"
 smallvec = "1.15.2"

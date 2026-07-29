@@ -442,14 +442,14 @@ fn get_device_id(meta: &fs::Metadata) -> u64 {
     meta.dev()
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "stable")))]
 fn get_device_id(meta: &fs::Metadata) -> u64 {
     use std::os::windows::fs::MetadataExt as _;
 
     meta.volume_serial_number().unwrap_or(0) as u64
 }
 
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(any(unix, all(windows, not(feature = "stable")))))]
 fn get_device_id(_meta: &fs::Metadata) -> u64 {
     0
 }

@@ -1,5 +1,5 @@
 fn main() -> std::io::Result<()> {
-    #[cfg(feature = "gui")]
+    #[cfg(feature = "windows_icon")]
     // Check if the target platform we are building FOR is Windows
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
         let mut res = winresource::WindowsResource::new();
