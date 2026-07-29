@@ -26,7 +26,7 @@
 #![allow(clippy::crate_in_macro_def)]
 #![allow(clippy::too_many_lines)]
 // --- Feature Gates ---
-#![cfg_attr(windows, feature(windows_by_handle))]
+#![cfg_attr(all(windows, not(feature = "stable")), feature(windows_by_handle))]
 
 pub mod arena;
 pub mod error;

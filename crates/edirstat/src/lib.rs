@@ -28,7 +28,7 @@
 // Docs
 #![doc = include_str!("../README.md")]
 // --- Feature Gates ---
-#![cfg_attr(windows, feature(windows_by_handle))]
+#![cfg_attr(all(windows, not(feature = "stable")), feature(windows_by_handle))]
 
 pub mod engine;
 
