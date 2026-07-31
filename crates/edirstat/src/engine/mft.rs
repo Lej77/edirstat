@@ -203,7 +203,7 @@ fn decode_utf16_name_to_compact_string(name_raw: &[u8]) -> CompactString {
     // LLVM easily identifies this contiguous chunk structure and compiles
     // it to vector register tests (e.g. SSE2/AVX2) automatically.
     let mut is_ascii = true;
-    for chunk in name_raw.chunks_exact(2) {
+    for chunk in name_raw.as_chunks::<2>().0 {
         if chunk[1] != 0 {
             is_ascii = false;
             break;
@@ -226,7 +226,9 @@ fn decode_utf16_name_to_compact_string(name_raw: &[u8]) -> CompactString {
 
     // 2. Safe wide/Unicode fallback.
     let u16_chars: Vec<u16> = name_raw
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect();
 
