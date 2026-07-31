@@ -601,8 +601,10 @@ pub fn load_snapshot_from_bytes(
             return Err(crate::EdirstatError::TruncatedNodes);
         }
         decompressed_data[..expected_nodes_size]
-            .chunks_exact(V2_NODE_SIZE)
-            .map(decode_v2_legacy_node)
+            .as_chunks::<V2_NODE_SIZE>()
+            .0
+            .iter()
+            .map(|chunk| decode_v2_legacy_node(chunk))
             .collect()
     } else {
         // Version 3: Reconstruct nodes from the 7 parallel column streams
