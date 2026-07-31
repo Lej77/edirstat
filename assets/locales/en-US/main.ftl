@@ -4,7 +4,7 @@ view = View
 help = Help
 
 # Menu Bar Actions
-scan-directory = 📁 Scan Directory
+new-scan = 📁 New Scan
 save-snapshot = 💾 Save Snapshot
 load-snapshot = 📖 Load Snapshot
 
@@ -12,8 +12,14 @@ load-snapshot = 📖 Load Snapshot
 idle = Idle
 
 # View Menu Options
-monospace-paths = Monospace Paths
+monospace-paths = 🅰 Monospace Paths
 highlight-duplicates = ✨ Highlight Duplicates
+treemap-borders = 🔳 Treemap Borders
+treemap-style =  Treemap Style
+treemap-style-vertical = Vertical Gradient
+treemap-style-offset-vertical = Offset Vertical Gradient
+treemap-style-diagonal = Diagonal Gradient
+treemap-style-cushion = Cushion Shading
 deletion-confirmation = 🗑 Deletion Confirmation
 trash-confirmation = ♻ Trash Confirmation
 time-format = 🕒 Time Format
@@ -46,10 +52,12 @@ toggle-right-panel = { $collapsed ->
 
 collapse-all = ⏏ Collapse All
 about = ℹ About
+web-not-available = Feature not available in the web version
 
 # Status Indicators
 scanning-disk = Scanning Disk...
 scan-complete = Scan Complete
+scan-cancelled = Scan Cancelled
 path-label = Path: { $path }
 worker-threads = ⚡ { $count } Worker Threads
 worker-threads-hover = The number of parallel, work-stealing CPU cores allocated for directory traversal.
@@ -114,6 +122,7 @@ dedup-warning-desc = { $count ->
 dedup-warning-no-original = No Original Copy Will Remain:
 dedup-warning-details = You have checked both the original and all duplicate copies for the files listed below. Deleting them will likely result in permanent data loss:
 dedup-cancel-hover = Click to Cancel Scan
+scan-cancel-hover = Click to Cancel Scan
 dedup-current-label = Current
 dedup-phase1-size = Phase 1/7: Grouping all scanned files by size...
 dedup-phase1-filter = Phase 1/7: Filtering exclusions on duplicate candidates...
@@ -178,7 +187,10 @@ explorer-action-delete-permanently = 🗑 Delete Permanently
 explorer-action-refresh-directory = 🔄 Refresh Directory
 
 # Explorer Empty State
-explorer-empty-state = Click 'Scan Directory' to explore disk usage.
+explorer-empty-state = Click 'New Scan' to explore disk usage.
+choose-an-option = Choose an Option
+web-viewer = Web Viewer
+load-demo = 👁 Load Sample Demo Snapshot
 placeholder-treemap = Scanned filesystem will be visualized as a treemap here.
 placeholder-plots = Scanned filesystem will be plotted here.
 
@@ -315,6 +327,12 @@ modal-how-dedup-step7-desc = Right before displaying or executing any deduplicat
 modal-licenses-title = 📜 Open Source Licenses
 modal-licenses-desc = The following third-party libraries and crates are used in this application:
 
+# Processing Modal
+modal-processing-title = ⏳ Processing...
+modal-processing-deletion = Deleting files and directories...
+modal-processing-trash = Moving files and directories to trash...
+modal-processing-hardlink = Replacing duplicates with hardlinks...
+modal-processing-softlink = Replacing duplicates with softlinks...
 
 # Explorer Column Headers
 explorer-hdr-name = Name
@@ -331,3 +349,25 @@ update-checking = Checking for updates...
 update-available = New version { $version } available!
 update-up-to-date = You are up to date
 update-failed = Update check failed: { $error }
+
+# Themes
+theme = 🎨 Theme
+theme-dark = Dark
+theme-high-contrast = High Contrast
+theme-light = Light
+theme-system = System
+
+# New Scan Options Modal
+modal-scan-options-title = New Scan Options
+modal-scan-options-header = Start a New Scan
+modal-scan-options-path-label = Directory path to scan:
+modal-scan-options-paste-tooltip = Paste from clipboard
+modal-scan-options-browse-tooltip = Browse folder...
+modal-scan-options-scan-btn = Scan
+modal-scan-options-cancel-btn = Cancel
+modal-scan-options-same-filesystem = Limit scan to the same filesystem/volume
+modal-scan-options-drives-header = 💽 Storage Drives & Volumes
+modal-scan-options-refresh-tooltip = Refresh storage drives
+modal-scan-options-root-system = Root System
+modal-scan-options-selected-badge = ✅ Selected
+modal-scan-options-free-of = { $free } free of { $total }

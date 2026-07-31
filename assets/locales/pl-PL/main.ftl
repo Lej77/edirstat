@@ -4,7 +4,7 @@ view = Widok
 help = Pomoc
 
 # Menu Bar Actions
-scan-directory = 📁 Skanuj katalog
+new-scan = 📁 Nowy skan
 save-snapshot = 💾 Zapisz migawkę
 load-snapshot = 📖 Wczytaj migawkę
 
@@ -12,8 +12,14 @@ load-snapshot = 📖 Wczytaj migawkę
 idle = Bezczynny
 
 # View Menu Options
-monospace-paths = Ścieżki o stałej szerokości
+monospace-paths = 🅰 Ścieżki o stałej szerokości
 highlight-duplicates = ✨ Wyróżnij duplikaty
+treemap-borders = 🔳 Obramowania mapy drzewa
+treemap-style =  Styl mapy drzewa
+treemap-style-vertical = Gradient pionowy
+treemap-style-offset-vertical = Przesunięty gradient pionowy
+treemap-style-diagonal = Gradient ukośny
+treemap-style-cushion = Cieniowanie poduszkowe
 deletion-confirmation = 🗑 Potwierdzenie usuwania
 trash-confirmation = ♻ Potwierdzenie przenoszenia do kosza
 time-format = 🕒 Format czasu
@@ -46,10 +52,12 @@ toggle-right-panel = { $collapsed ->
 
 collapse-all = ⏏ Zwiń wszystko
 about = ℹ O programie eDirStat
+web-not-available = Funkcja niedostępna w wersji internetowej
 
 # Status Indicators
 scanning-disk = Skanowanie dysku...
 scan-complete = Skanowanie ukończone
+scan-cancelled = Skanowanie anulowane
 path-label = Ścieżka: { $path }
 worker-threads = ⚡ { $count } Wątki robocze
 worker-threads-hover = Liczba równoległych rdzeni procesora (work-stealing) przypisanych do przeszukiwania katalogów.
@@ -115,6 +123,7 @@ dedup-warning-desc = { $count ->
 dedup-warning-no-original = Żadna oryginalna kopia nie pozostanie:
 dedup-warning-details = Zaznaczono oryginał oraz wszystkie kopie duplikatów dla poniższych plików. Ich usunięcie doprowadzi do trwałej utraty danych:
 dedup-cancel-hover = Kliknij, aby anulować skanowanie
+scan-cancel-hover = Kliknij, aby anulować skanowanie
 dedup-current-label = Bieżący
 dedup-phase1-size = Faza 1/7: Grupowanie wszystkich plików według rozmiaru...
 dedup-phase1-filter = Faza 1/7: Filtrowanie wykluczeń z kandydatów na duplikaty...
@@ -181,8 +190,11 @@ explorer-action-delete-permanently = 🗑 Usuń trwale
 explorer-action-refresh-directory = 🔄 Odśwież katalog
 
 # Explorer Empty State
-explorer-empty-state = Kliknij 'Skanuj katalog', aby zbadać zużycie dysku.
-placeholder-treemap = Zeskanowany system plików zostanie tutaj zwizualizowany w postaci mapy drzewa (treemap).
+explorer-empty-state = Kliknij 'Nowy skan', aby zbadać zużycie dysku.
+choose-an-option = Wybierz opcję
+web-viewer = Przeglądarka Web
+load-demo = 👁 Załaduj przykładową migawkę demo
+placeholder-treemap = Zeskanowany system plików zostanie tutaj przedstawiony w postaci mapy drzewa. (treemap).
 placeholder-plots = Zeskanowany system plików zostanie tutaj przedstawiony na wykresie.
 
 # --- Extensions Panel ---
@@ -320,6 +332,12 @@ modal-how-dedup-step7-desc = Tuż przed wyświetleniem lub wykonaniem jakiejkolw
 modal-licenses-title = 📜 Licencje Open Source
 modal-licenses-desc = W aplikacji używane są następujące biblioteki i pakiety (crates) stron trzecich:
 
+# Processing Modal
+modal-processing-title = ⏳ Przetwarzanie...
+modal-processing-deletion = Usuwanie plików i katalogów...
+modal-processing-trash = Przenoszenie plików i katalogów do kosza...
+modal-processing-hardlink = Zastępowanie duplikatów twardymi dowiązaniami...
+modal-processing-softlink = Zastępowanie duplikatów symbolicznymi dowiązaniami...
 
 # Explorer Column Headers
 explorer-hdr-name = Nazwa
@@ -336,3 +354,25 @@ update-checking = Sprawdzanie aktualizacji...
 update-available = Nowa wersja { $version } jest dostępna!
 update-up-to-date = Masz najnowszą wersję
 update-failed = Błąd sprawdzania aktualizacji: { $error }
+
+# Themes
+theme = 🎨 Motyw
+theme-dark = Ciemny
+theme-high-contrast = Wysoki kontrast
+theme-light = Jasny
+theme-system = Systemowy
+
+# New Scan Options Modal
+modal-scan-options-title = Opcje nowego skanowania
+modal-scan-options-header = Uruchom nowe skanowanie
+modal-scan-options-path-label = Ścieżka katalogu do skanowania:
+modal-scan-options-paste-tooltip = Wklej ze schowka
+modal-scan-options-browse-tooltip = Przeglądaj folder...
+modal-scan-options-scan-btn = Skanuj
+modal-scan-options-cancel-btn = Anuluj
+modal-scan-options-same-filesystem = Ogranicz skanowanie do tego samego systemu plików/wolumenu
+modal-scan-options-drives-header = 💽 Dyski i wolumeny pamięci
+modal-scan-options-refresh-tooltip = Odśwież dyski pamięci
+modal-scan-options-root-system = System główny
+modal-scan-options-selected-badge = ✅ Wybrane
+modal-scan-options-free-of = { $free } wolne z { $total }

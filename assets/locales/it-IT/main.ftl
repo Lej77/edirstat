@@ -4,7 +4,7 @@ view = Visualizza
 help = Aiuto
 
 # Menu Bar Actions
-scan-directory = 📁 Analizza cartella
+new-scan = 📁 Nuova analisi
 save-snapshot = 💾 Salva istantanea
 load-snapshot = 📖 Carica istantanea
 
@@ -12,8 +12,14 @@ load-snapshot = 📖 Carica istantanea
 idle = Inattivo
 
 # View Menu Options
-monospace-paths = Percorsi a spaziatura fissa
+monospace-paths = 🅰 Percorsi a spaziatura fissa
 highlight-duplicates = ✨ Evidenzia duplicati
+treemap-borders = 🔳 Bordi della treemap
+treemap-style =  Stile della treemap
+treemap-style-vertical = Gradiente verticale
+treemap-style-offset-vertical = Gradiente verticale sfalsato
+treemap-style-diagonal = Gradiente diagonale
+treemap-style-cushion = Ombreggiatura cushion
 deletion-confirmation = 🗑 Conferma eliminazione
 trash-confirmation = ♻ Conferma spostamento nel cestino
 time-format = 🕒 Formato orario
@@ -46,10 +52,12 @@ toggle-right-panel = { $collapsed ->
 
 collapse-all = ⏏ Comprimi tutto
 about = ℹ Informazioni su eDirStat
+web-not-available = Funzionalità non disponibile nella versione web
 
 # Status Indicators
 scanning-disk = Analisi del disco...
 scan-complete = Analisi completata
+scan-cancelled = Analisi annullata
 path-label = Percorso: { $path }
 worker-threads = ⚡ { $count } Thread di lavoro
 worker-threads-hover = Il numero di core CPU paralleli con work-stealing allocati per l'esplorazione delle cartelle.
@@ -114,6 +122,7 @@ dedup-warning-desc = { $count ->
 dedup-warning-no-original = Nessuna copia originale rimarrà:
 dedup-warning-details = Hai selezionato sia l'originale sia tutte le copie duplicate per i file elencati di seguito. La loro eliminazione comporterà probabilmente una perdita permanente di dati:
 dedup-cancel-hover = Clicca per annullare l'analisi
+scan-cancel-hover = Clicca per annullare l'analisi
 dedup-current-label = Corrente
 dedup-phase1-size = Fase 1/7: Raggruppamento dei file per dimensione...
 dedup-phase1-filter = Fase 1/7: Filtro delle esclusioni sui candidati duplicati...
@@ -178,8 +187,11 @@ explorer-action-delete-permanently = 🗑 Elimina permanentemente
 explorer-action-refresh-directory = 🔄 Aggiorna cartella
 
 # Explorer Empty State
-explorer-empty-state = Clicca su 'Analizza cartella' per esplorare l'uso del disco.
-placeholder-treemap = Il file system analizzato verrà visualizzato come una treemap qui.
+explorer-empty-state = Clicca su 'Nuova analisi' per esplorare l'uso del disco.
+choose-an-option = Scegli un'opzione
+web-viewer = Visualizzatore Web
+load-demo = 👁 Carica snapshot di demo
+placeholder-treemap = Il file system scansionato verrà visualizzato qui come mappa ad albero.
 placeholder-plots = Il file system analizzato verrà rappresentato graficamente qui.
 
 # --- Extensions Panel ---
@@ -315,6 +327,12 @@ modal-how-dedup-step7-desc = Appena prima di visualizzare o eseguire qualsiasi a
 modal-licenses-title = 📜 Licenze Open Source
 modal-licenses-desc = Le seguenti librerie e crate di terze parti sono utilizzate in questa applicazione:
 
+# Processing Modal
+modal-processing-title = ⏳ Elaborazione...
+modal-processing-deletion = Eliminazione di file e directory...
+modal-processing-trash = Spostamento di file e directory nel cestino...
+modal-processing-hardlink = Sostituzione dei duplicati con hardlink...
+modal-processing-softlink = Sostituzione dei duplicati con softlink...
 
 # Explorer Column Headers
 explorer-hdr-name = Nome
@@ -331,3 +349,25 @@ update-checking = Verifica aggiornamenti in corso...
 update-available = Nuova versione { $version } disponibile!
 update-up-to-date = L'applicazione è aggiornata
 update-failed = Verifica aggiornamenti fallita: { $error }
+
+# Themes
+theme = 🎨 Tema
+theme-dark = Scuro
+theme-high-contrast = Contrasto elevato
+theme-light = Chiaro
+theme-system = Sistema
+
+# New Scan Options Modal
+modal-scan-options-title = Opzioni nuova analisi
+modal-scan-options-header = Avvia una nuova analisi
+modal-scan-options-path-label = Percorso della cartella da analizzare:
+modal-scan-options-paste-tooltip = Incolla dagli appunti
+modal-scan-options-browse-tooltip = Sfoglia cartella...
+modal-scan-options-scan-btn = Analizza
+modal-scan-options-cancel-btn = Annulla
+modal-scan-options-same-filesystem = Limita l'analisi allo stesso filesystem/volume
+modal-scan-options-drives-header = 💽 Unità di archiviazione e volumi
+modal-scan-options-refresh-tooltip = Aggiorna unità di archiviazione
+modal-scan-options-root-system = Sistema principale
+modal-scan-options-selected-badge = ✅ Selezionato
+modal-scan-options-free-of = { $free } liberi su { $total }

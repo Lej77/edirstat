@@ -4,16 +4,22 @@ view = Weergave
 help = Help
 
 # Menu Bar Actions
-scan-directory = 📁 Map scannen
-save-snapshot = 💾 Momentopname opslaan
+new-scan = 📁 Nieuwe scan
+save-snapshot = 💾 Snapshot opslaan
 load-snapshot = 📖 Momentopname laden
 
 # Menu Bar Status
 idle = Inactief
 
 # View Menu Options
-monospace-paths = Monospace paden
+monospace-paths = 🅰 Monospace paden
 highlight-duplicates = ✨ Duplicaten markeren
+treemap-borders = 🔳 Randen van treemap
+treemap-style =  Stijl van treemap
+treemap-style-vertical = Verticale gradiënt
+treemap-style-offset-vertical = Verschoven verticale gradiënt
+treemap-style-diagonal = Diagonale gradiënt
+treemap-style-cushion = Kussenschaduw
 deletion-confirmation = 🗑 Bevestiging voor verwijderen
 trash-confirmation = ♻ Bevestiging voor prullenbak
 time-format = 🕒 Tijdnotatie
@@ -46,10 +52,12 @@ toggle-right-panel = { $collapsed ->
 
 collapse-all = ⏏ Alles inklappen
 about = ℹ Over eDirStat
+web-not-available = Functie niet beschikbaar in de webversie
 
 # Status Indicators
 scanning-disk = Schijf scannen...
 scan-complete = Scan voltooid
+scan-cancelled = Scan geannuleerd
 path-label = Pad: { $path }
 worker-threads = ⚡ { $count } Worker-threads
 worker-threads-hover = Het aantal parallelle, work-stealing CPU-kernen toegewezen voor het doorzoeken van de map.
@@ -63,7 +71,7 @@ scan-speed = ⚡ Snelheid: { $speed }/s
 
 # Selection Info
 selection-path = Selectie: { $path }
-selection-items = Selection: { $count ->
+selection-items = Selectie: { $count ->
     [one] 1 item
    *[other] { $count } items
 }
@@ -114,6 +122,7 @@ dedup-warning-desc = { $count ->
 dedup-warning-no-original = Geen origineel exemplaar blijft over:
 dedup-warning-details = U heeft zowel het origineel als alle duplicaat-kopieën voor de hieronder vermelde bestanden geselecteerd. Het verwijderen ervan zal waarschijnlijk leiden tot permanent gegevensverlies:
 dedup-cancel-hover = Klik om de scan te annuleren
+scan-cancel-hover = Klik om de scan te annuleren
 dedup-current-label = Actueel
 dedup-phase1-size = Fase 1/7: Bestanden groeperen op grootte...
 dedup-phase1-filter = Fase 1/7: Uitsluitingen filteren voor duplicaat-kandidaten...
@@ -178,7 +187,10 @@ explorer-action-delete-permanently = 🗑 Permanent verwijderen
 explorer-action-refresh-directory = 🔄 Map vernieuwen
 
 # Explorer Empty State
-explorer-empty-state = Klik op 'Map scannen' om het schijfgebruik te verkennen.
+explorer-empty-state = Klik op 'Nieuwe scan' om het schijfgebruik te verkennen.
+choose-an-option = Kies een optie
+web-viewer = Webviewer
+load-demo = 👁 Laad voorbeeld-demo snapshot
 placeholder-treemap = Gescande bestandssysteem wordt hier als treemap weergegeven.
 placeholder-plots = Gescande bestandssysteem wordt hier grafisch weergegeven.
 
@@ -315,6 +327,12 @@ modal-how-dedup-step7-desc = Vlak voor het weergeven of uitvoeren van een dedupl
 modal-licenses-title = 📜 Open Source licenties
 modal-licenses-desc = De volgende externe bibliotheken en crates worden in deze toepassing gebruikt:
 
+# Processing Modal
+modal-processing-title = ⏳ Verwerken...
+modal-processing-deletion = Bestanden en mappen verwijderen...
+modal-processing-trash = Bestanden en mappen naar de prullenbak verplaatsen...
+modal-processing-hardlink = Duplicaten vervangen door hardlinks...
+modal-processing-softlink = Duplicaten vervangen door softlinks...
 
 # Explorer Column Headers
 explorer-hdr-name = Naam
@@ -331,3 +349,25 @@ update-checking = Controleren op updates...
 update-available = Nieuwe versie { $version } beschikbaar!
 update-up-to-date = U bent up-to-date
 update-failed = Updatecontrole mislukt: { $error }
+
+# Themes
+theme = 🎨 Thema
+theme-dark = Donker
+theme-high-contrast = Hoog contrast
+theme-light = Licht
+theme-system = Systeem
+
+# New Scan Options Modal
+modal-scan-options-title = Nieuwe scanopties
+modal-scan-options-header = Start een nieuwe scan
+modal-scan-options-path-label = Te scannen map:
+modal-scan-options-paste-tooltip = Plakken van klembord
+modal-scan-options-browse-tooltip = Map zoeken...
+modal-scan-options-scan-btn = Scannen
+modal-scan-options-cancel-btn = Annuleren
+modal-scan-options-same-filesystem = Scan beperken tot hetzelfde bestandssysteem/volume
+modal-scan-options-drives-header = 💽 Opslagstations & volumes
+modal-scan-options-refresh-tooltip = Opslagstations vernieuwen
+modal-scan-options-root-system = Systeem-root
+modal-scan-options-selected-badge = ✅ Geselecteerd
+modal-scan-options-free-of = { $free } vrij van { $total }
