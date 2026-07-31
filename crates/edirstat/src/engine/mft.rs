@@ -1331,6 +1331,7 @@ pub fn try_scan_mft(
 
 /// Resolves the Windows partition volume path from a standard file path
 #[cfg(target_os = "windows")]
+#[must_use]
 pub fn get_volume_path(path: &Path) -> Option<String> {
     let path_str = path.to_string_lossy();
     let trimmed = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
@@ -1347,6 +1348,7 @@ pub fn get_volume_path(path: &Path) -> Option<String> {
 
 /// Resolves the partition volume path from a mount file path
 #[cfg(target_os = "linux")]
+#[must_use]
 pub fn get_volume_path(path: &Path) -> Option<String> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
     let disk = get_disk(path, &disks)?;
@@ -1356,12 +1358,14 @@ pub fn get_volume_path(path: &Path) -> Option<String> {
 /// Resolves partition paths on non-Windows targets.
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 #[allow(clippy::unnecessary_wraps)]
+#[must_use]
 pub fn get_volume_path(path: &Path) -> Option<String> {
     Some(path.to_string_lossy().into_owned())
 }
 
 /// Probes disk mount points to find an accessible `$MFT` system file.
-fn find_mft_file_at_mount(path: &Path) -> Option<PathBuf> {
+#[must_use]
+pub fn find_mft_file_at_mount(path: &Path) -> Option<PathBuf> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
     let disk = get_disk(path, &disks)?;
     find_mft_file(disk.mount_point())
@@ -1382,7 +1386,8 @@ fn find_mft_file(dir: &Path) -> Option<PathBuf> {
 }
 
 /// Find the disk with the most specific match (the longest matching prefix) for the specified path.
-fn get_disk<'disk>(path: &Path, disks: &'disk sysinfo::Disks) -> Option<&'disk sysinfo::Disk> {
+#[must_use]
+pub fn get_disk<'disk>(path: &Path, disks: &'disk sysinfo::Disks) -> Option<&'disk sysinfo::Disk> {
     // Canonicalize the target path so symlinks and trailing slashes are resolved
     let target_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
@@ -1425,15 +1430,4 @@ pub fn is_ntfs(path: &Path) -> bool {
     VALID_FS_TYPES
         .iter()
         .any(|valid| disk.file_system().eq_ignore_ascii_case(valid))
-}
-
-/// Returns `true` if the file system type is likely to be NTFS.
-#[must_use]
-pub fn is_ntfs_type(fs_type: &str) -> bool {
-    #[cfg(target_os = "linux")]
-    const VALID_FS_TYPES: &[&str] = &["ntfs", "ntfs3", "fuseblk", "fuse.ntfs", "fuse.ntfs-3g"];
-    #[cfg(target_os = "windows")]
-    const VALID_FS_TYPES: &[&str] = &["NTFS"];
-
-    VALID_FS_TYPES.iter().any(|valid| fs_type.eq_ignore_ascii_case(valid))
 }
