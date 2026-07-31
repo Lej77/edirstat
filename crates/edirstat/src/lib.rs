@@ -35,9 +35,9 @@ pub mod engine;
 pub use edirstat_core::{EdirstatError, arena, snapshot, time_utils};
 #[cfg(feature = "gui")]
 pub use edirstat_gui as gui;
-pub use engine::{coordinator, traversal};
 #[cfg(feature = "unstable")]
 pub use engine::*;
+pub use engine::{coordinator, traversal};
 #[cfg(feature = "gui")]
 pub use gui::colors;
 
