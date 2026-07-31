@@ -115,14 +115,7 @@ impl TraversalEngine {
             // Attempt raw MFT parsing on Windows only if partition is explicitly detected as NTFS
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             {
-                #[cfg(target_os = "linux")]
-                const VALID_FS_TYPES: &[&str] = &["ntfs", "ntfs3", "fuseblk", "fuse.ntfs", "fuse.ntfs-3g"];
-                #[cfg(target_os = "windows")]
-                const VALID_FS_TYPES: &[&str] = &["NTFS"];
-
-                if let Some(fs_type) = super::mft::get_fs_type(&root_path)
-                    && VALID_FS_TYPES.iter().any(|valid| fs_type.eq_ignore_ascii_case(valid))
-                {
+                if super::mft::is_ntfs(&root_path) {
                     match super::mft::try_scan_mft(&root_path, &scan_cancel, &event_tx, &stats) {
                         Ok(()) => {
                             // Raw scan was executed successfully, end thread execution

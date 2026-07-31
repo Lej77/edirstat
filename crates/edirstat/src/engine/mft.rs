@@ -997,6 +997,7 @@ fn process_mft_chunks(
 /// Helper function to parse an exported, raw $MFT metadata file sequentially on any platform.
 fn scan_mft_file_sequential(
     file_path: &Path,
+    search_root_path: &Path,
     scan_cancel: &Arc<AtomicBool>,
     event_tx: &Sender<Vec<ScanEvent>>,
     stats: &TraversalStats,
@@ -1053,7 +1054,7 @@ fn scan_mft_file_sequential(
         &filled_rx,
         &empty_tx,
         max_records,
-        file_path,
+        search_root_path,
         scan_cancel,
         event_tx,
         stats,
@@ -1075,28 +1076,55 @@ pub fn try_scan_mft(
         .and_then(|s| s.to_str())
         .is_some_and(|s| s.eq_ignore_ascii_case("$mft"))
     {
-        return scan_mft_file_sequential(root_path, scan_cancel, event_tx, stats);
+        return scan_mft_file_sequential(root_path, root_path, scan_cancel, event_tx, stats);
     }
 
-    let volume_path = get_volume_path(root_path).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Unable to determine partition drive path from target path",
-        )
-    })?;
+    let (raw_disk, volume_path) = {
+        let volume_path = get_volume_path(root_path).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Unable to determine partition drive path from target path",
+            )
+        });
 
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::fs::OpenOptionsExt as _;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
 
-        options.share_mode(7);
-        // Direct non-buffered sequential I/O
-        options.custom_flags(FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN);
-    }
+            options.share_mode(7);
+            // Direct non-buffered sequential I/O
+            options.custom_flags(FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN);
+        }
 
-    let raw_disk = options.open(&volume_path)?;
+        let result =
+            volume_path.and_then(|volume_path| Ok((options.open(&volume_path)?, volume_path)));
+
+        #[cfg(not(target_os = "linux"))]
+        let only_mft = false;
+        #[cfg(target_os = "linux")]
+        let only_mft = {
+            let disks = sysinfo::Disks::new_with_refreshed_list();
+            get_disk(root_path, &disks)
+                .is_some_and(|disk| disk.file_system().eq_ignore_ascii_case("fuseblk"))
+        };
+
+        if (result.is_err() || only_mft)
+            && let Some(mft_path) = find_mft_file_at_mount(root_path)
+        {
+            // $MFT file in drive root is available
+            return scan_mft_file_sequential(&mft_path, root_path, scan_cancel, event_tx, stats);
+        } else if only_mft {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "$MFT file not found in root of disk",
+            )
+            .into());
+        }
+
+        result?
+    };
 
     // 1. Read Boot Sector (Synchronously via raw sector read)
     let mut aligned_boot_buffer = vec![AlignedPage { data: [0; 4096] }; 1];
@@ -1318,35 +1346,9 @@ fn get_volume_path(path: &Path) -> Option<String> {
 /// Resolves the partition volume path from a mount file path
 #[cfg(target_os = "linux")]
 fn get_volume_path(path: &Path) -> Option<String> {
-    // Canonicalize the target path so symlinks and trailing slashes are resolved
-    let canonical_target = path.canonicalize().ok()?;
-
-    let mounts = std::fs::read_to_string("/proc/mounts").ok()?;
-
-    let mut best: Option<(PathBuf, String, usize)> = None;
-
-    for line in mounts.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 3 {
-            continue;
-        }
-
-        let device = parts[0];
-        // Canonicalize the mount point from /proc/mounts to match correctly
-        let Ok(mount_point) = PathBuf::from(parts[1]).canonicalize() else {
-            continue;
-        };
-
-        if canonical_target.starts_with(&mount_point) {
-            let depth = mount_point.as_os_str().len();
-            if best.as_ref().is_none_or(|b| depth > b.2) {
-                best = Some((mount_point, device.to_string(), depth));
-            }
-        }
-    }
-
-    let (_, device_path, _) = best?;
-    Some(device_path)
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let disk = get_disk(path, &disks)?;
+    Some(disk.name().to_str()?.to_owned())
 }
 
 /// Resolves partition paths on non-Windows targets.
@@ -1356,24 +1358,69 @@ fn get_volume_path(path: &Path) -> Option<String> {
     Some(path.to_string_lossy().into_owned())
 }
 
-/// Checks the root of the specified directory path to verify if the file system is NTFS.
-#[must_use]
-pub fn get_fs_type(path: &Path) -> Option<String> {
-    // 1. Retrieve the list of active system disks and mount points safely.
+/// Probes disk mount points to find an accessible `$MFT` system file.
+fn find_mft_file_at_mount(path: &Path) -> Option<PathBuf> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
+    let disk = get_disk(path, &disks)?;
+    find_mft_file(disk.mount_point())
+}
 
-    // 2. Resolve the path.
+/// Probes a directory path for the existence of an NTFS Master File Table (`$MFT` or `$mft`) file.
+#[must_use]
+fn find_mft_file(dir: &Path) -> Option<PathBuf> {
+    let upper = dir.join("$MFT");
+    if upper.is_file() {
+        return Some(upper);
+    }
+    let lower = dir.join("$mft");
+    if lower.is_file() {
+        return Some(lower);
+    }
+    None
+}
+
+/// Find the disk with the most specific match (the longest matching prefix) for the specified path.
+fn get_disk<'disk>(path: &Path, disks: &'disk sysinfo::Disks) -> Option<&'disk sysinfo::Disk> {
+    // Canonicalize the target path so symlinks and trailing slashes are resolved
     let target_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
-    // 3. Strip Windows UNC prefixes so the path matches sysinfo's mount points (e.g. C:\)
-    let target_path_string = target_path.to_string_lossy();
-    let cleaned_str = crate::model::arena::clean_unc_path(&target_path_string);
-    let final_path = Path::new(cleaned_str.as_ref()).to_path_buf();
+    // Strip Windows UNC prefixes so the path matches sysinfo's mount points (e.g. C:\)
+    #[cfg(windows)]
+    let target_path = {
+        let target_path_string = target_path.to_string_lossy();
+        let cleaned_str = crate::model::arena::clean_unc_path(&target_path_string);
+        Path::new(cleaned_str.as_ref()).to_path_buf()
+    };
 
-    // 4. Find the disk with the most specific match (the longest matching prefix).
+    // Find the disk with the most specific match (the longest matching prefix).
     disks
         .iter()
-        .filter(|disk| final_path.starts_with(disk.mount_point()))
+        .filter(|disk| target_path.starts_with(disk.mount_point()))
         .max_by_key(|disk| disk.mount_point().as_os_str().len())
-        .map(|disk| disk.file_system().to_string_lossy().into_owned())
+}
+
+/// Checks the root of the specified directory path to verify if the file system is NTFS.
+#[must_use]
+pub fn is_ntfs(path: &Path) -> bool {
+    #[cfg(target_os = "linux")]
+    const VALID_FS_TYPES: &[&str] = &["ntfs", "ntfs3", "fuse.ntfs", "fuse.ntfs-3g"];
+    #[cfg(target_os = "windows")]
+    const VALID_FS_TYPES: &[&str] = &["NTFS"];
+
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let Some(disk) = get_disk(path, &disks) else {
+        return false;
+    };
+
+    #[cfg(target_os = "linux")]
+    if disk.file_system().eq_ignore_ascii_case("fuseblk")
+        && find_mft_file(disk.mount_point()).is_some()
+    {
+        // Likely fuse NTFS driver on Linux since there is an "$MFT" file in the root directory.
+        return true;
+    }
+
+    VALID_FS_TYPES
+        .iter()
+        .any(|valid| disk.file_system().eq_ignore_ascii_case(valid))
 }
