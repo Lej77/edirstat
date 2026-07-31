@@ -37,7 +37,7 @@ struct MftEntry {
     modified_timestamp: u32,
     created_timestamp: u32,
     name_id: u32,
-    flags: u8, // bit 0: is_dir, bit 1: is_symlink, bit 2: has_attr_list
+    flags: u8, // bit 0: is_dir, bit 1: is_symlink, bit 2: has_attr_list, bit 3: untrusted_size
     _padding: [u8; 3],
 }
 
@@ -58,6 +58,7 @@ struct ExtractedLink {
     name: CompactString,
     size: u64,
     has_attr_list: bool,
+    size_is_trusted: bool,
 }
 
 struct IngestionChunk {
@@ -533,9 +534,9 @@ fn extract_all_links_from_record(attrs: &[AttributeHeader<'_>]) -> SmallVec<[Ext
 
     // Trust the unnamed $DATA stream size if found (greater than 0),
     // otherwise fallback to the filename data_size (catches WOF-compressed/placeholder system files).
-    let actual_size = match unnamed_data_size {
-        Some(size) if size > 0 => size,
-        _ => fallback_size,
+    let (actual_size, size_is_trusted) = match unnamed_data_size {
+        Some(size) if size > 0 => (size, true),
+        _ => (fallback_size, false),
     };
 
     let mut out = SmallVec::new();
@@ -545,6 +546,7 @@ fn extract_all_links_from_record(attrs: &[AttributeHeader<'_>]) -> SmallVec<[Ext
             name,
             size: actual_size,
             has_attr_list,
+            size_is_trusted,
         });
     }
     out
@@ -740,6 +742,9 @@ fn process_mft_chunks(
                                             if first.has_attr_list {
                                                 entry_flags |= 4;
                                             }
+                                            if !first.size_is_trusted {
+                                                entry_flags |= 8;
+                                            }
 
                                             *entry_slot = Some(MftEntry {
                                                 size,
@@ -804,13 +809,18 @@ fn process_mft_chunks(
         let virt_id = mft_entries.len() as u64;
         let name_id = sharded_pool.get_or_insert(link.name.as_bytes());
 
+        let mut entry_flags = 0u8; // Hardlinks are files
+        if !link.size_is_trusted {
+            entry_flags |= 8;
+        }
+
         mft_entries.push(Some(MftEntry {
             size: link.size,
             parent_record_id: link.parent_ref,
             modified_timestamp: 0,
             created_timestamp: 0,
             name_id: name_id.0,
-            flags: 0, // Hardlinks are files
+            flags: entry_flags,
             _padding: [0; 3],
         }));
 
@@ -925,8 +935,7 @@ fn process_mft_chunks(
 
                 // Resolve sizes for placeholder system files containing attribute lists
                 let mut actual_size = entry.size;
-                if actual_size == 0
-                    && (entry.flags & 4) != 0
+                if ((actual_size == 0 && (entry.flags & 4) != 0) || (entry.flags & 8) != 0)
                     && let Some(name_str) = sharded_pool.get_compact_str(entry.name_id)
                 {
                     let mut full_path = reconstruct_path(
