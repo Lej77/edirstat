@@ -32,7 +32,7 @@
 
 pub mod engine;
 
-pub use edirstat_core::{EdirstatError, arena, snapshot, time_utils};
+pub use edirstat_core::{EdirstatError, arena, fs_utils, snapshot, time_utils};
 pub use edirstat_gui as gui;
 pub use engine::{coordinator, traversal};
 pub use gui::colors;

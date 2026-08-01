@@ -31,6 +31,7 @@
 pub mod arena;
 pub mod error;
 pub mod file_id;
+pub mod fs_utils;
 pub mod snapshot;
 pub mod state;
 pub mod time_utils;
