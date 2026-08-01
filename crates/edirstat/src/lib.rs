@@ -32,7 +32,7 @@
 
 pub mod engine;
 
-pub use edirstat_core::{EdirstatError, arena, snapshot, time_utils};
+pub use edirstat_core::{EdirstatError, arena, fs_utils, snapshot, time_utils};
 #[cfg(feature = "gui")]
 pub use edirstat_gui as gui;
 #[cfg(feature = "unstable")]
