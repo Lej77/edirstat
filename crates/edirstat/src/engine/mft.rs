@@ -641,6 +641,7 @@ fn process_mft_chunks(
     stats: &TraversalStats,
 ) {
     const BATCH_SIZE: usize = 8192;
+    const TAKE_RESERVED_NTFS_RECORDS: bool = false;
 
     let mut mft_entries: Vec<Option<MftEntry>> = Vec::new();
     mft_entries.resize_with(max_records as usize, || None);
@@ -686,6 +687,7 @@ fn process_mft_chunks(
                     let mut local_links = Vec::new();
 
                     for (i, entry_slot) in target_slice.iter_mut().enumerate() {
+                        let record_id = start_idx + i;
                         let offset = i * MFT_RECORD_SIZE;
                         if offset + MFT_RECORD_SIZE <= chunk.bytes_read {
                             let record_buffer = &mut chunk_bytes[offset..offset + MFT_RECORD_SIZE];
@@ -706,7 +708,9 @@ fn process_mft_chunks(
                                     ]);
                                     let base_record_id = base_file_ref & 0x0000_ffff_ffff_ffff;
 
-                                    if base_record_id == 0 {
+                                    if (record_id >= 16 && base_record_id == 0)
+                                        || TAKE_RESERVED_NTFS_RECORDS
+                                    {
                                         let attrs = parse_attributes(record_buffer);
                                         let extracted_links = extract_all_links_from_record(&attrs);
                                         let is_dir = (flags & 2) != 0;
