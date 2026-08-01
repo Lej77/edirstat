@@ -33,7 +33,6 @@ cli = ["dep:clap", "mimalloc-rspack"]
 gui = ["dep:edirstat-gui", "dep:eframe", "dep:cli-or-gui"]
 windows_icon = ["dep:winresource"]
 
-unstable = [] # Expose unstable APIs
 stable = ["edirstat-core/stable"] # Build on stable toolchain
 
 [dependencies]
