@@ -708,11 +708,10 @@ fn process_mft_chunks(
                                         record_buffer[38],
                                         record_buffer[39],
                                     ]);
+                                    #[expect(unused_variables)]
                                     let base_record_id = base_file_ref & 0x0000_ffff_ffff_ffff;
 
-                                    if (record_id >= 16 && base_record_id == 0)
-                                        || TAKE_RESERVED_NTFS_RECORDS
-                                    {
+                                    if record_id >= 16 || TAKE_RESERVED_NTFS_RECORDS {
                                         let attrs = parse_attributes(record_buffer);
                                         let extracted_links = extract_all_links_from_record(&attrs);
                                         let is_dir = (flags & 2) != 0;
