@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -140,7 +140,10 @@ impl TraversalEngine {
             });
             let is_root_scan = root_path == std::path::Path::new("/");
             let expected_device_id = if same_filesystem || !is_root_scan {
-                root_metadata.as_ref().map(get_device_id).ok()
+                root_metadata
+                    .as_ref()
+                    .map(|metadata| get_device_id(&root_path, metadata))
+                    .ok()
             } else {
                 None
             };
@@ -449,21 +452,40 @@ fn scan_directory(task: &ScanTask, ctx: &mut WorkerContext<'_>) {
 }
 
 #[cfg(unix)]
-fn get_device_id(meta: &fs::Metadata) -> u64 {
+fn get_device_id(_path: &Path, meta: &fs::Metadata) -> u64 {
     use std::os::unix::fs::MetadataExt as _;
 
     meta.dev()
 }
 
 #[cfg(all(windows, not(feature = "stable")))]
-fn get_device_id(meta: &fs::Metadata) -> u64 {
+fn get_device_id(_path: &Path, meta: &fs::Metadata) -> u64 {
     use std::os::windows::fs::MetadataExt as _;
 
     meta.volume_serial_number().unwrap_or(0) as u64
 }
+#[cfg(all(windows, feature = "stable"))]
+fn get_device_id(path: &Path, _meta: &fs::Metadata) -> u64 {
+    use ::file_id::FileId;
 
-#[cfg(not(any(unix, all(windows, not(feature = "stable")))))]
-fn get_device_id(_meta: &fs::Metadata) -> u64 {
+    match ::file_id::get_file_id(path) {
+        Err(_) => 0,
+        Ok(id) => match id {
+            FileId::Inode { device_id, .. } => device_id,
+            FileId::LowRes {
+                volume_serial_number,
+                ..
+            } => u64::from(volume_serial_number),
+            FileId::HighRes {
+                volume_serial_number,
+                ..
+            } => volume_serial_number,
+        },
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn get_device_id(_path: &Path, _meta: &fs::Metadata) -> u64 {
     0
 }
 

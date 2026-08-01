@@ -1280,6 +1280,7 @@ dependencies = [
  "edirstat-core",
  "edirstat-gui",
  "eframe",
+ "file-id",
  "mimalloc-rspack",
  "parking_lot",
  "rayon",

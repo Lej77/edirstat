@@ -33,7 +33,7 @@ cli = ["dep:clap", "mimalloc-rspack"]
 gui = ["dep:edirstat-gui", "dep:eframe", "dep:cli-or-gui"]
 windows_icon = ["dep:winresource"]
 
-stable = ["edirstat-core/stable"] # Build on stable toolchain
+stable = ["edirstat-core/stable", "dep:file-id"] # Build on stable toolchain
 
 [dependencies]
 edirstat-core = { path = "../edirstat-core" }
@@ -56,6 +56,9 @@ sysinfo = { version = "0.39.6", default-features = false, features = ["disk"] }
 
 # feature: profile-tracy
 tracy-client = { version = "0.18.4", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+file-id = { version = "0.2.3", optional = true }
 
 [build-dependencies]
 winresource = { version = "0.1.31", optional = true }
