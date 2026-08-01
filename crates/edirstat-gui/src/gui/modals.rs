@@ -209,7 +209,7 @@ pub(crate) fn get_detected_drives(force_refresh: bool) -> Vec<SystemDrive> {
         let disks = sysinfo::Disks::new_with_refreshed_list();
         let mut drives = Vec::new();
         for disk in &disks {
-            let fs_str = disk.file_system().to_string_lossy().into_owned();
+            let mut fs_str = disk.file_system().to_string_lossy().into_owned();
             let fs_lower = fs_str.to_lowercase();
             if matches!(
                 fs_lower.as_str(),
@@ -226,6 +226,12 @@ pub(crate) fn get_detected_drives(force_refresh: bool) -> Vec<SystemDrive> {
                     | "ramfs"
             ) {
                 continue;
+            }
+
+            if fs_lower == "fuseblk"
+                && edirstat_core::fs_utils::find_mft_file(disk.mount_point()).is_some()
+            {
+                fs_str = "ntfs-3g".to_string();
             }
 
             let mount_str = disk.mount_point().to_string_lossy();

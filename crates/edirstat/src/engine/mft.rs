@@ -1101,26 +1101,32 @@ pub fn try_scan_mft(
         let result =
             volume_path.and_then(|volume_path| Ok((options.open(&volume_path)?, volume_path)));
 
-        #[cfg(not(target_os = "linux"))]
-        let only_mft = false;
         #[cfg(target_os = "linux")]
-        let only_mft = {
-            let disks = sysinfo::Disks::new_with_refreshed_list();
-            get_disk(root_path, &disks)
-                .is_some_and(|disk| disk.file_system().eq_ignore_ascii_case("fuseblk"))
-        };
-
-        if (result.is_err() || only_mft)
-            && let Some(mft_path) = find_mft_file_at_mount(root_path)
         {
-            // $MFT file in drive root is available
-            return scan_mft_file_sequential(&mft_path, root_path, scan_cancel, event_tx, stats);
-        } else if only_mft {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "$MFT file not found in root of disk",
-            )
-            .into());
+            let only_mft = {
+                let disks = sysinfo::Disks::new_with_refreshed_list();
+                get_disk(root_path, &disks)
+                    .is_some_and(|disk| disk.file_system().eq_ignore_ascii_case("fuseblk"))
+            };
+
+            if (result.is_err() || only_mft)
+                && let Some(mft_path) = find_mft_file_at_mount(root_path)
+            {
+                // $MFT file is available in drive root
+                return scan_mft_file_sequential(
+                    &mft_path,
+                    root_path,
+                    scan_cancel,
+                    event_tx,
+                    stats,
+                );
+            } else if only_mft {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "$MFT file not found in root of disk",
+                )
+                .into());
+            }
         }
 
         result?
@@ -1362,21 +1368,7 @@ fn get_volume_path(path: &Path) -> Option<String> {
 fn find_mft_file_at_mount(path: &Path) -> Option<PathBuf> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
     let disk = get_disk(path, &disks)?;
-    find_mft_file(disk.mount_point())
-}
-
-/// Probes a directory path for the existence of an NTFS Master File Table (`$MFT` or `$mft`) file.
-#[must_use]
-fn find_mft_file(dir: &Path) -> Option<PathBuf> {
-    let upper = dir.join("$MFT");
-    if upper.is_file() {
-        return Some(upper);
-    }
-    let lower = dir.join("$mft");
-    if lower.is_file() {
-        return Some(lower);
-    }
-    None
+    crate::fs_utils::find_mft_file(disk.mount_point())
 }
 
 /// Find the disk with the most specific match (the longest matching prefix) for the specified path.
@@ -1414,7 +1406,7 @@ pub fn is_ntfs(path: &Path) -> bool {
 
     #[cfg(target_os = "linux")]
     if disk.file_system().eq_ignore_ascii_case("fuseblk")
-        && find_mft_file(disk.mount_point()).is_some()
+        && crate::fs_utils::find_mft_file(disk.mount_point()).is_some()
     {
         // Likely fuse NTFS driver on Linux since there is an "$MFT" file in the root directory.
         return true;
