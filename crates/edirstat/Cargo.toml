@@ -43,7 +43,7 @@ edirstat-gui = { path = "../edirstat-gui", default-features = false, optional = 
 ahash = "0.8.12"
 anyhow = "1.0.104"
 bytemuck = { version = "1.25.2", features = ["derive"] }
-clap = { version = "4.6.4", features = ["derive"], optional = true }
+clap = { version = "4.6.5", features = ["derive"], optional = true }
 cli-or-gui = { version = "0.1.1", optional = true }
 compact_str = "0.10.0"
 crc-fast = "1.10.0"

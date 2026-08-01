@@ -182,25 +182,16 @@ impl TraversalEngine {
                 let stats = stats.clone();
 
                 thread_handles.push(thread::spawn(move || {
-                    let mut local_id_counter = 1u32; // Root is 0, workers start generating local child IDs
-                    let mut event_buffer = Vec::with_capacity(1024);
-                    let worker_id_u8 = worker_idx as u8;
-
-                    // Helper to push and flush events
-                    let mut emit_event =
-                        |event: ScanEvent, force_flush: bool, tx: &Sender<Vec<ScanEvent>>| {
-                            event_buffer.push(event);
-                            if event_buffer.len() >= 1024
-                                || (force_flush && !event_buffer.is_empty())
-                            {
-                                let batch =
-                                    std::mem::replace(&mut event_buffer, Vec::with_capacity(1024));
-                                let _ = tx.send(batch);
-                            }
-                        };
+                    let mut ctx = WorkerContext::new(
+                        worker_idx as u8,
+                        &event_tx,
+                        &local_worker,
+                        &stats,
+                        &scan_cancel,
+                    );
 
                     loop {
-                        if scan_cancel.load(Ordering::Relaxed) {
+                        if ctx.scan_cancel.load(Ordering::Relaxed) {
                             done.store(true, Ordering::SeqCst);
                         }
                         if done.load(Ordering::SeqCst) {
@@ -208,7 +199,7 @@ impl TraversalEngine {
                         }
 
                         // Find a task
-                        let task_opt = local_worker.pop().or_else(|| {
+                        let task_opt = ctx.local_worker.pop().or_else(|| {
                             // Try stealing from the global injector
                             let mut steal_res = injector.steal();
                             while steal_res.is_retry() {
@@ -239,16 +230,7 @@ impl TraversalEngine {
                             busy_workers.fetch_add(1, Ordering::SeqCst);
 
                             // Process the directory scan task
-                            scan_directory(
-                                &task,
-                                worker_id_u8,
-                                &mut local_id_counter,
-                                &mut emit_event,
-                                &event_tx,
-                                &local_worker,
-                                &stats,
-                                &scan_cancel,
-                            );
+                            scan_directory(&task, &mut ctx);
 
                             // Decrement active busy counter
                             busy_workers.fetch_sub(1, Ordering::SeqCst);
@@ -269,9 +251,7 @@ impl TraversalEngine {
                     }
 
                     // Flush final events remaining in buffer
-                    if !event_buffer.is_empty() {
-                        let _ = event_tx.send(event_buffer);
-                    }
+                    ctx.flush();
                 }));
             }
 
@@ -285,19 +265,59 @@ impl TraversalEngine {
     }
 }
 
-fn scan_directory<F>(
-    task: &ScanTask,
+struct WorkerContext<'a> {
     worker_id: u8,
-    local_id_counter: &mut u32,
-    emit_event: &mut F,
-    event_tx: &Sender<Vec<ScanEvent>>,
-    local_worker: &Worker<ScanTask>,
-    stats: &TraversalStats,
-    scan_cancel: &Arc<AtomicBool>,
-) where
-    F: FnMut(ScanEvent, bool, &Sender<Vec<ScanEvent>>),
-{
-    if scan_cancel.load(Ordering::Relaxed) {
+    local_id_counter: u32,
+    event_buffer: Vec<ScanEvent>,
+    event_tx: &'a Sender<Vec<ScanEvent>>,
+    local_worker: &'a Worker<ScanTask>,
+    stats: &'a TraversalStats,
+    scan_cancel: &'a Arc<AtomicBool>,
+}
+
+impl<'a> WorkerContext<'a> {
+    fn new(
+        worker_id: u8,
+        event_tx: &'a Sender<Vec<ScanEvent>>,
+        local_worker: &'a Worker<ScanTask>,
+        stats: &'a TraversalStats,
+        scan_cancel: &'a Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            worker_id,
+            local_id_counter: 1, // Root is 0, workers start generating local child IDs
+            event_buffer: Vec::with_capacity(1024),
+            event_tx,
+            local_worker,
+            stats,
+            scan_cancel,
+        }
+    }
+
+    fn emit_event(&mut self, event: ScanEvent, force_flush: bool) {
+        self.event_buffer.push(event);
+        if self.event_buffer.len() >= 1024 || (force_flush && !self.event_buffer.is_empty()) {
+            let batch = std::mem::replace(&mut self.event_buffer, Vec::with_capacity(1024));
+            let _ = self.event_tx.send(batch);
+        }
+    }
+
+    fn flush(&mut self) {
+        if !self.event_buffer.is_empty() {
+            let batch = std::mem::replace(&mut self.event_buffer, Vec::with_capacity(1024));
+            let _ = self.event_tx.send(batch);
+        }
+    }
+
+    const fn next_local_id(&mut self) -> LocalId {
+        let id = LocalId(self.local_id_counter);
+        self.local_id_counter += 1;
+        id
+    }
+}
+
+fn scan_directory(task: &ScanTask, ctx: &mut WorkerContext<'_>) {
+    if ctx.scan_cancel.load(Ordering::Relaxed) {
         return;
     }
     let dir_path = &task.path;
@@ -308,22 +328,21 @@ fn scan_directory<F>(
         if let Err(e) = fs::read_dir(dir_path)
             && e.kind() == std::io::ErrorKind::PermissionDenied
         {
-            emit_event(
+            ctx.emit_event(
                 ScanEvent::PermissionDenied {
                     worker_id: task.worker_id,
                     local_id: parent_local_id,
                 },
                 true,
-                event_tx,
             );
         }
         return;
     };
 
-    stats.dirs_scanned.fetch_add(1, Ordering::Relaxed);
+    ctx.stats.dirs_scanned.fetch_add(1, Ordering::Relaxed);
 
     for (entry_idx, entry_res) in entries.enumerate() {
-        if entry_idx % 256 == 0 && scan_cancel.load(Ordering::Relaxed) {
+        if entry_idx % 256 == 0 && ctx.scan_cancel.load(Ordering::Relaxed) {
             break;
         }
         let Ok(entry) = entry_res else { continue };
@@ -359,14 +378,13 @@ fn scan_directory<F>(
             }
 
             // Assign new local ID
-            let child_local_id = LocalId(*local_id_counter);
-            *local_id_counter += 1;
+            let child_local_id = ctx.next_local_id();
 
             // Emit directory discovery event immediately (force flush) to prevent work-stealing races
-            emit_event(
+            ctx.emit_event(
                 ScanEvent::DirDiscovered {
                     parent_worker_id: task.worker_id,
-                    child_worker_id: worker_id,
+                    child_worker_id: ctx.worker_id,
                     local_parent_id: parent_local_id,
                     local_child_id: child_local_id,
                     name: meta.name,
@@ -375,7 +393,6 @@ fn scan_directory<F>(
                     no_permission: meta.no_permission,
                 },
                 true,
-                event_tx,
             );
 
             // Create a new task and push to local queue
@@ -387,19 +404,19 @@ fn scan_directory<F>(
             let new_task = ScanTask {
                 path: entry.path(),
                 parent_id: child_local_id,
-                worker_id,
+                worker_id: ctx.worker_id,
                 ancestors: new_ancestors,
                 expected_device_id: task.expected_device_id,
             };
-            local_worker.push(new_task);
+            ctx.local_worker.push(new_task);
         } else {
             // It's a file
-            stats.files_scanned.fetch_add(1, Ordering::Relaxed);
-            stats
+            ctx.stats.files_scanned.fetch_add(1, Ordering::Relaxed);
+            ctx.stats
                 .bytes_scanned
                 .fetch_add(meta.len as usize, Ordering::Relaxed);
 
-            emit_event(
+            ctx.emit_event(
                 ScanEvent::FileDiscovered {
                     parent_worker_id: task.worker_id,
                     local_parent_id: parent_local_id,
@@ -411,13 +428,12 @@ fn scan_directory<F>(
                     no_permission: meta.no_permission,
                 },
                 false,
-                event_tx,
             );
         }
     }
 
     // Force flush events after completing a directory scan to keep coordinator updated
-    emit_event(
+    ctx.emit_event(
         ScanEvent::FileDiscovered {
             parent_worker_id: task.worker_id,
             local_parent_id: parent_local_id,
@@ -429,7 +445,6 @@ fn scan_directory<F>(
             no_permission: false,
         },
         true,
-        event_tx,
     );
 }
 
