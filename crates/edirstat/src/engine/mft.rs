@@ -706,59 +706,55 @@ fn process_mft_chunks(
                                         record_buffer[38],
                                         record_buffer[39],
                                     ]);
-                                    let base_record_id = base_file_ref & 0x0000_ffff_ffff_ffff;
+                                    let _base_record_id = base_file_ref & 0x0000_ffff_ffff_ffff;
 
-                                    if base_record_id == 0 {
-                                        let attrs = parse_attributes(record_buffer);
-                                        let extracted_links = extract_all_links_from_record(&attrs);
-                                        let is_dir = (flags & 2) != 0;
+                                    let attrs = parse_attributes(record_buffer);
+                                    let extracted_links = extract_all_links_from_record(&attrs);
+                                    let is_dir = (flags & 2) != 0;
 
-                                        let mut modified = 0u32;
-                                        let mut created = 0u32;
+                                    let mut modified = 0u32;
+                                    let mut created = 0u32;
 
-                                        for attr in &attrs {
-                                            if attr.ty == 0x10
-                                                && !attr.is_non_resident
-                                                && let Some((cre, mod_t)) =
-                                                    parse_standard_information_timestamps(
-                                                        attr.payload,
-                                                    )
-                                            {
-                                                created = cre;
-                                                modified = mod_t;
-                                                break;
-                                            }
+                                    for attr in &attrs {
+                                        if attr.ty == 0x10
+                                            && !attr.is_non_resident
+                                            && let Some((cre, mod_t)) =
+                                                parse_standard_information_timestamps(attr.payload)
+                                        {
+                                            created = cre;
+                                            modified = mod_t;
+                                            break;
+                                        }
+                                    }
+
+                                    if let Some(first) = extracted_links.first() {
+                                        let name_id =
+                                            sharded_pool_clone.get_or_insert(first.name.as_bytes());
+                                        let size = if is_dir { 0 } else { first.size };
+
+                                        let mut entry_flags = 0u8;
+                                        if is_dir {
+                                            entry_flags |= 1;
+                                        }
+                                        if first.has_attr_list {
+                                            entry_flags |= 4;
+                                        }
+                                        if !first.size_is_trusted {
+                                            entry_flags |= 8;
                                         }
 
-                                        if let Some(first) = extracted_links.first() {
-                                            let name_id = sharded_pool_clone
-                                                .get_or_insert(first.name.as_bytes());
-                                            let size = if is_dir { 0 } else { first.size };
+                                        *entry_slot = Some(MftEntry {
+                                            size,
+                                            parent_record_id: first.parent_ref,
+                                            modified_timestamp: modified,
+                                            created_timestamp: created,
+                                            name_id: name_id.0,
+                                            flags: entry_flags,
+                                            _padding: [0; 3],
+                                        });
 
-                                            let mut entry_flags = 0u8;
-                                            if is_dir {
-                                                entry_flags |= 1;
-                                            }
-                                            if first.has_attr_list {
-                                                entry_flags |= 4;
-                                            }
-                                            if !first.size_is_trusted {
-                                                entry_flags |= 8;
-                                            }
-
-                                            *entry_slot = Some(MftEntry {
-                                                size,
-                                                parent_record_id: first.parent_ref,
-                                                modified_timestamp: modified,
-                                                created_timestamp: created,
-                                                name_id: name_id.0,
-                                                flags: entry_flags,
-                                                _padding: [0; 3],
-                                            });
-
-                                            if extracted_links.len() > 1 {
-                                                local_links.extend(extracted_links[1..].to_vec());
-                                            }
+                                        if extracted_links.len() > 1 {
+                                            local_links.extend(extracted_links[1..].to_vec());
                                         }
                                     }
                                 }
@@ -937,6 +933,7 @@ fn process_mft_chunks(
                 let mut actual_size = entry.size;
                 if ((actual_size == 0 && (entry.flags & 4) != 0) || (entry.flags & 8) != 0)
                     && let Some(name_str) = sharded_pool.get_compact_str(entry.name_id)
+                    && !name_str.eq_ignore_ascii_case("$BadClus")
                 {
                     let mut full_path = reconstruct_path(
                         &mft_entries,
