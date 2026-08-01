@@ -1398,6 +1398,8 @@ pub fn is_ntfs(path: &Path) -> bool {
     const VALID_FS_TYPES: &[&str] = &["ntfs", "ntfs3", "fuse.ntfs", "fuse.ntfs-3g"];
     #[cfg(target_os = "windows")]
     const VALID_FS_TYPES: &[&str] = &["NTFS"];
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    const VALID_FS_TYPES: &[&str] = &[];
 
     let disks = sysinfo::Disks::new_with_refreshed_list();
     let Some(disk) = get_disk(path, &disks) else {
