@@ -1519,8 +1519,8 @@ pub fn get_volume_path(path: &Path) -> Option<String> {
 }
 
 /// Probes disk mount points to find an accessible `$MFT` system file.
-#[cfg(target_os = "linux")]
-fn find_mft_file_at_mount(path: &Path) -> Option<PathBuf> {
+#[must_use]
+pub fn find_mft_file_at_mount(path: &Path) -> Option<PathBuf> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
     let disk = get_disk(path, &disks)?;
     crate::fs_utils::find_mft_file(disk.mount_point())
