@@ -677,11 +677,13 @@ fn find_target_record_in_memory_flat(
 }
 
 /// Consolidates parallel in-place ingestion streams, assembles internal hierarchies, and streams standard events.
+#[expect(clippy::too_many_arguments)]
 fn process_mft_chunks(
     filled_rx: &crossbeam::channel::Receiver<IngestionChunk>,
     empty_tx: &crossbeam::channel::Sender<Vec<AlignedPage>>,
     max_records: u64,
     search_root_path: &Path,
+    allow_manual_fs_checks: bool,
     scan_cancel: &Arc<AtomicBool>,
     event_tx: &Sender<Vec<ScanEvent>>,
     stats: &TraversalStats,
@@ -1067,9 +1069,9 @@ fn process_mft_chunks(
 
                 // Resolve sizes for files we are uncertain about
                 let mut actual_size = entry.size;
-                if (entry.flags & 8) != 0
+                if allow_manual_fs_checks
+                    && (entry.flags & 8) != 0 // untrusted_size is true
                     && let Some(name_str) = sharded_pool.get_compact_str(entry.name_id)
-                    && !name_str.eq_ignore_ascii_case("$BadClus")
                 {
                     let mut full_path = reconstruct_path(
                         &mft_entries,
@@ -1139,9 +1141,12 @@ fn process_mft_chunks(
 }
 
 /// Helper function to parse an exported, raw $MFT metadata file sequentially on any platform.
+///
+/// If `search_root_path` is `Some` then it should contain the path to a directory
+/// with the same content as the parsed data of the $MFT file.
 fn scan_mft_file_sequential(
     file_path: &Path,
-    search_root_path: &Path,
+    search_root_path: Option<&Path>,
     scan_cancel: &Arc<AtomicBool>,
     event_tx: &Sender<Vec<ScanEvent>>,
     stats: &TraversalStats,
@@ -1198,7 +1203,8 @@ fn scan_mft_file_sequential(
         &filled_rx,
         &empty_tx,
         max_records,
-        search_root_path,
+        search_root_path.unwrap_or(file_path),
+        search_root_path.is_some(),
         scan_cancel,
         event_tx,
         stats,
@@ -1220,7 +1226,7 @@ pub fn try_scan_mft(
         .and_then(|s| s.to_str())
         .is_some_and(|s| s.eq_ignore_ascii_case("$mft"))
     {
-        return scan_mft_file_sequential(root_path, root_path, scan_cancel, event_tx, stats);
+        return scan_mft_file_sequential(root_path, None, scan_cancel, event_tx, stats);
     }
 
     let (raw_disk, volume_path) = {
@@ -1259,7 +1265,7 @@ pub fn try_scan_mft(
                 // $MFT file is available in drive root
                 return scan_mft_file_sequential(
                     &mft_path,
-                    root_path,
+                    Some(root_path),
                     scan_cancel,
                     event_tx,
                     stats,
@@ -1469,6 +1475,7 @@ pub fn try_scan_mft(
         &empty_tx,
         max_records,
         root_path,
+        true,
         scan_cancel,
         event_tx,
         stats,
