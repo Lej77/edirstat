@@ -853,7 +853,7 @@ fn process_mft_chunks(
         let mut index = 0;
         let mut names_and_priorities = HashMap::new();
         while let Some(link) = side_channel_links.get(index) {
-            if let Some(entry) = &mut mft_entries[link.record_id as usize] {
+            if let Some(Some(entry)) = mft_entries.get_mut(link.record_id as usize) {
                 if entry.name_id == 0 && entry.parent_record_id == 0 {
                     // The first name/link was found in an extension record, move into record
                     let name_id = sharded_pool.get_or_insert(link.name.as_bytes());
@@ -901,7 +901,7 @@ fn process_mft_chunks(
             }
             continue;
         }
-        // Don NOT treat extension records as files (would cause duplicates):
+        // Do NOT treat extension records as files (would cause duplicates):
         *entry_slot = None;
 
         let Some(Some(parent)) = mft_entries.get_mut(extension.parent_record_id as usize) else {
@@ -947,7 +947,7 @@ fn process_mft_chunks(
     // 3. Append secondary virtual links (hardlinks) safely on the single main thread and build structural sibling links
     for link in side_channel_links {
         let virt_id = mft_entries.len() as u64;
-        let Some(entry) = &mft_entries[link.record_id as usize] else {
+        let Some(Some(entry)) = mft_entries.get(link.record_id as usize) else {
             continue;
         };
         let name_id = sharded_pool.get_or_insert(link.name.as_bytes());
