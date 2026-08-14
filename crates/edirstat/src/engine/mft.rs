@@ -848,7 +848,7 @@ fn process_mft_chunks(
     });
     let mut side_channel_links = side_channel_links.into_inner();
 
-    // Extension record processing - deduplicate links in same parent folder (removes Dos names)
+    // Extension record processing - deduplicate links in same parent folder
     {
         let mut index = 0;
         let mut names_and_priorities = HashMap::new();
