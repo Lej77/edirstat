@@ -70,6 +70,9 @@ struct ExtractedLink {
     parent_ref: u64,
     /// Record if with metadata.
     record_id: u64,
+    /// Record id that contained the extracted name, this might differ from
+    /// `record_id` if there are extensions records for the file.
+    source_id: u64,
     /// Name for the file/folder with `record_id` inside folder with `parent_ref` id.
     name: CompactString,
     /// Priority of this link name, for a single parent only the link with the
@@ -489,10 +492,15 @@ struct MetadataInfo {
 }
 
 /// Extracts metadata information from a file record.
-fn extract_metadata_info(attrs: &[AttributeHeader<'_>], main_record_id: u64) -> MetadataInfo {
+fn extract_metadata_info(
+    attrs: &[AttributeHeader<'_>],
+    main_record_id: u64,
+    parsed_record_id: u64,
+) -> MetadataInfo {
     let mut links = SmallVec::<[ExtractedLink; 1]>::new();
     let mut unnamed_data_size = None;
     let mut has_attr_list = false;
+    let mut has_reparse_point = false;
     let mut fallback_size = 0u64;
 
     let mut modified = 0u32;
@@ -543,6 +551,7 @@ fn extract_metadata_info(attrs: &[AttributeHeader<'_>], main_record_id: u64) -> 
                             let link = ExtractedLink {
                                 parent_ref,
                                 record_id: main_record_id,
+                                source_id: parsed_record_id,
                                 name,
                                 priority,
                             };
@@ -569,6 +578,10 @@ fn extract_metadata_info(attrs: &[AttributeHeader<'_>], main_record_id: u64) -> 
                 // $ATTRIBUTE_LIST Attribute
                 has_attr_list = true;
             }
+            0xC0 => {
+                // $REPARSE_POINT Attribute (WOF compression, Cloud Files, symlinks/junctions)
+                has_reparse_point = true;
+            }
             0x10 if !attr.is_non_resident => {
                 if let Some((cre, mod_t)) = parse_standard_information_timestamps(attr.payload) {
                     created = cre;
@@ -582,7 +595,13 @@ fn extract_metadata_info(attrs: &[AttributeHeader<'_>], main_record_id: u64) -> 
     // Trust the unnamed $DATA stream size if found (greater than 0),
     // otherwise fallback to the filename data_size (catches WOF-compressed/placeholder system files).
     let (actual_size, size_is_trusted) = match unnamed_data_size {
+        // Normal non-empty files with standard $DATA stream:
         Some(size) if size > 0 => (size, true),
+
+        // Genuine empty files: explicitly 0-byte $DATA, 0-byte $FILE_NAME, and no reparse/attr-list:
+        Some(0) if fallback_size == 0 && !has_attr_list && !has_reparse_point => (0, true),
+
+        // Everything else (unnamed $DATA missing, WOF/cloud files with fallback_size > 0, etc.):
         _ => (fallback_size, false),
     };
 
@@ -773,6 +792,7 @@ fn process_mft_chunks(
                             } else {
                                 base_record_id
                             },
+                            record_id as u64,
                         );
 
                         if metadata.links.is_empty() && !metadata.has_attr_list {
@@ -848,12 +868,15 @@ fn process_mft_chunks(
     });
     let mut side_channel_links = side_channel_links.into_inner();
 
-    // Extension record processing - deduplicate links in same parent folder (removes Dos names)
+    // Deterministic ordering based on the record id where a link was found:
+    side_channel_links.sort_by_key(|link| (link.record_id, link.parent_ref, link.source_id));
+
+    // Extension record processing - deduplicate links in same parent folder
     {
         let mut index = 0;
         let mut names_and_priorities = HashMap::new();
         while let Some(link) = side_channel_links.get(index) {
-            if let Some(entry) = &mut mft_entries[link.record_id as usize] {
+            if let Some(Some(entry)) = mft_entries.get_mut(link.record_id as usize) {
                 if entry.name_id == 0 && entry.parent_record_id == 0 {
                     // The first name/link was found in an extension record, move into record
                     let name_id = sharded_pool.get_or_insert(link.name.as_bytes());
@@ -901,7 +924,7 @@ fn process_mft_chunks(
             }
             continue;
         }
-        // Don NOT treat extension records as files (would cause duplicates):
+        // Do NOT treat extension records as files (would cause duplicates):
         *entry_slot = None;
 
         let Some(Some(parent)) = mft_entries.get_mut(extension.parent_record_id as usize) else {
@@ -947,7 +970,7 @@ fn process_mft_chunks(
     // 3. Append secondary virtual links (hardlinks) safely on the single main thread and build structural sibling links
     for link in side_channel_links {
         let virt_id = mft_entries.len() as u64;
-        let Some(entry) = &mft_entries[link.record_id as usize] else {
+        let Some(Some(entry)) = mft_entries.get(link.record_id as usize) else {
             continue;
         };
         let name_id = sharded_pool.get_or_insert(link.name.as_bytes());
