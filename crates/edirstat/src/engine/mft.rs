@@ -70,6 +70,9 @@ struct ExtractedLink {
     parent_ref: u64,
     /// Record if with metadata.
     record_id: u64,
+    /// Record id that contained the extracted name, this might differ from
+    /// `record_id` if there are extensions records for the file.
+    source_id: u64,
     /// Name for the file/folder with `record_id` inside folder with `parent_ref` id.
     name: CompactString,
     /// Priority of this link name, for a single parent only the link with the
@@ -489,7 +492,11 @@ struct MetadataInfo {
 }
 
 /// Extracts metadata information from a file record.
-fn extract_metadata_info(attrs: &[AttributeHeader<'_>], main_record_id: u64) -> MetadataInfo {
+fn extract_metadata_info(
+    attrs: &[AttributeHeader<'_>],
+    main_record_id: u64,
+    parsed_record_id: u64,
+) -> MetadataInfo {
     let mut links = SmallVec::<[ExtractedLink; 1]>::new();
     let mut unnamed_data_size = None;
     let mut has_attr_list = false;
@@ -544,6 +551,7 @@ fn extract_metadata_info(attrs: &[AttributeHeader<'_>], main_record_id: u64) -> 
                             let link = ExtractedLink {
                                 parent_ref,
                                 record_id: main_record_id,
+                                source_id: parsed_record_id,
                                 name,
                                 priority,
                             };
@@ -784,6 +792,7 @@ fn process_mft_chunks(
                             } else {
                                 base_record_id
                             },
+                            record_id as u64,
                         );
 
                         if metadata.links.is_empty() && !metadata.has_attr_list {
@@ -858,6 +867,9 @@ fn process_mft_chunks(
         }
     });
     let mut side_channel_links = side_channel_links.into_inner();
+
+    // Deterministic ordering based on the record id where a link was found:
+    side_channel_links.sort_by_key(|link| (link.record_id, link.parent_ref, link.source_id));
 
     // Extension record processing - deduplicate links in same parent folder
     {
