@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -30,6 +31,7 @@ struct AlignedPage {
     data: [u8; 4096],
 }
 
+#[derive(Clone)]
 #[repr(C, align(8))]
 struct MftEntry {
     size: u64,
@@ -37,8 +39,18 @@ struct MftEntry {
     modified_timestamp: u32,
     created_timestamp: u32,
     name_id: u32,
-    flags: u8, // bit 0: is_dir, bit 1: is_symlink, bit 2: has_attr_list
-    _padding: [u8; 3],
+    name_priority: u8,
+    /// Each bit indicates something different when set:
+    ///
+    /// - bit 0 (value 1): `is_dir`
+    /// - bit 1 (value 2): `is_symlink`
+    /// - bit 2 (value 4): `has_attr_list`
+    /// - bit 3 (value 8): `untrusted_size`
+    /// - bit 4 (value 16): extension record, `name_id` will be 0 and
+    ///   `parent_record_id` instead indicates base record id, update base
+    ///   record with the collected metadata then discard this entry.
+    flags: u8,
+    _padding: [u8; 2],
 }
 
 struct TraversalFrame {
@@ -54,10 +66,18 @@ struct DataRun {
 
 #[derive(Clone)]
 struct ExtractedLink {
+    /// Record id for folder that contains the hard link.
     parent_ref: u64,
+    /// Record if with metadata.
+    record_id: u64,
+    /// Record id that contained the extracted name, this might differ from
+    /// `record_id` if there are extensions records for the file.
+    source_id: u64,
+    /// Name for the file/folder with `record_id` inside folder with `parent_ref` id.
     name: CompactString,
-    size: u64,
-    has_attr_list: bool,
+    /// Priority of this link name, for a single parent only the link with the
+    /// highest priority should be kept.
+    priority: u8,
 }
 
 struct IngestionChunk {
@@ -456,12 +476,35 @@ fn parse_standard_information_timestamps(payload: &[u8]) -> Option<(u32, u32)> {
     }
 }
 
-/// Extracts all unique directory links from a file record, deduplicating local namespace variants.
-fn extract_all_links_from_record(attrs: &[AttributeHeader<'_>]) -> SmallVec<[ExtractedLink; 1]> {
-    let mut links = SmallVec::<[(u64, CompactString, i32); 2]>::new();
+struct MetadataInfo {
+    /// All unique directory links from a file record, deduplicating local namespace variants.
+    links: SmallVec<[ExtractedLink; 1]>,
+    /// Time when file/folder was last modified.
+    modified: u32,
+    /// Time when file/folder was created.
+    created: u32,
+    /// File size.
+    size: u64,
+    /// `true` if the size is likely correct; otherwise the size is likely incorrect.
+    size_is_trusted: bool,
+    /// This file/folder has extra info in other MFT records.
+    has_attr_list: bool,
+}
+
+/// Extracts metadata information from a file record.
+fn extract_metadata_info(
+    attrs: &[AttributeHeader<'_>],
+    main_record_id: u64,
+    parsed_record_id: u64,
+) -> MetadataInfo {
+    let mut links = SmallVec::<[ExtractedLink; 1]>::new();
     let mut unnamed_data_size = None;
     let mut has_attr_list = false;
+    let mut has_reparse_point = false;
     let mut fallback_size = 0u64;
+
+    let mut modified = 0u32;
+    let mut created = 0u32;
 
     for attr in attrs {
         match attr.ty {
@@ -483,7 +526,7 @@ fn extract_all_links_from_record(attrs: &[AttributeHeader<'_>]) -> SmallVec<[Ext
                     ]) & 0x0000_ffff_ffff_ffff;
 
                     let namespace = val[65];
-                    let prio = match namespace {
+                    let priority = match namespace {
                         1 => 3, // Win32
                         3 => 2, // Win32AndDos
                         2 => 1, // Dos
@@ -494,20 +537,28 @@ fn extract_all_links_from_record(attrs: &[AttributeHeader<'_>]) -> SmallVec<[Ext
                     if 66 + name_len * 2 <= val.len() {
                         let mut existing_idx = None;
                         for (idx, item) in links.iter().enumerate() {
-                            if item.0 == parent_ref {
+                            if item.parent_ref == parent_ref {
                                 existing_idx = Some(idx);
                                 break;
                             }
                         }
 
-                        let should_decode = existing_idx.is_none_or(|idx| prio > links[idx].2);
+                        let should_decode =
+                            existing_idx.is_none_or(|idx| priority > links[idx].priority);
 
                         if should_decode && let Some(name_raw) = val.get(66..66 + name_len * 2) {
-                            let compact_name = decode_utf16_name_to_compact_string(name_raw);
+                            let name = decode_utf16_name_to_compact_string(name_raw);
+                            let link = ExtractedLink {
+                                parent_ref,
+                                record_id: main_record_id,
+                                source_id: parsed_record_id,
+                                name,
+                                priority,
+                            };
                             if let Some(idx) = existing_idx {
-                                links[idx] = (parent_ref, compact_name, prio);
+                                links[idx] = link;
                             } else {
-                                links.push((parent_ref, compact_name, prio));
+                                links.push(link);
                             }
                         }
                     }
@@ -527,27 +578,41 @@ fn extract_all_links_from_record(attrs: &[AttributeHeader<'_>]) -> SmallVec<[Ext
                 // $ATTRIBUTE_LIST Attribute
                 has_attr_list = true;
             }
+            0xC0 => {
+                // $REPARSE_POINT Attribute (WOF compression, Cloud Files, symlinks/junctions)
+                has_reparse_point = true;
+            }
+            0x10 if !attr.is_non_resident => {
+                if let Some((cre, mod_t)) = parse_standard_information_timestamps(attr.payload) {
+                    created = cre;
+                    modified = mod_t;
+                }
+            }
             _ => {}
         }
     }
 
     // Trust the unnamed $DATA stream size if found (greater than 0),
     // otherwise fallback to the filename data_size (catches WOF-compressed/placeholder system files).
-    let actual_size = match unnamed_data_size {
-        Some(size) if size > 0 => size,
-        _ => fallback_size,
+    let (actual_size, size_is_trusted) = match unnamed_data_size {
+        // Normal non-empty files with standard $DATA stream:
+        Some(size) if size > 0 => (size, true),
+
+        // Genuine empty files: explicitly 0-byte $DATA, 0-byte $FILE_NAME, and no reparse/attr-list:
+        Some(0) if fallback_size == 0 && !has_attr_list && !has_reparse_point => (0, true),
+
+        // Everything else (unnamed $DATA missing, WOF/cloud files with fallback_size > 0, etc.):
+        _ => (fallback_size, false),
     };
 
-    let mut out = SmallVec::new();
-    for (parent_ref, name, _) in links {
-        out.push(ExtractedLink {
-            parent_ref,
-            name,
-            size: actual_size,
-            has_attr_list,
-        });
+    MetadataInfo {
+        links,
+        modified,
+        created,
+        size: actual_size,
+        size_is_trusted,
+        has_attr_list,
     }
-    out
 }
 
 /// Reconstructs the absolute path of an MFT record purely in-memory by walking up parent references.
@@ -631,11 +696,13 @@ fn find_target_record_in_memory_flat(
 }
 
 /// Consolidates parallel in-place ingestion streams, assembles internal hierarchies, and streams standard events.
+#[expect(clippy::too_many_arguments)]
 fn process_mft_chunks(
     filled_rx: &crossbeam::channel::Receiver<IngestionChunk>,
     empty_tx: &crossbeam::channel::Sender<Vec<AlignedPage>>,
     max_records: u64,
     search_root_path: &Path,
+    allow_manual_fs_checks: bool,
     scan_cancel: &Arc<AtomicBool>,
     event_tx: &Sender<Vec<ScanEvent>>,
     stats: &TraversalStats,
@@ -646,8 +713,8 @@ fn process_mft_chunks(
     let mut mft_entries: Vec<Option<MftEntry>> = Vec::new();
     mft_entries.resize_with(max_records as usize, || None);
 
-    let sharded_pool = Arc::new(ShardedStringPool::new(16));
-    let side_channel_links = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let sharded_pool = ShardedStringPool::new(16);
+    let side_channel_links = parking_lot::Mutex::new(Vec::new());
 
     // Consume chunks and parse records concurrently using Rayon threads
     rayon::scope(|scope| {
@@ -661,9 +728,9 @@ fn process_mft_chunks(
             let records_count = chunk.bytes_read / MFT_RECORD_SIZE;
             let start_idx = chunk.start_record_id as usize;
 
-            let side_channel_links_clone = side_channel_links.clone();
-            let sharded_pool_clone = sharded_pool.clone();
-            let empty_tx_clone = empty_tx.clone();
+            let side_channel_links = &side_channel_links;
+            let sharded_pool = &sharded_pool;
+            let empty_tx = &empty_tx;
 
             let safe_records_count = records_count.min(max_records as usize - start_idx);
 
@@ -689,88 +756,101 @@ fn process_mft_chunks(
                     for (i, entry_slot) in target_slice.iter_mut().enumerate() {
                         let record_id = start_idx + i;
                         let offset = i * MFT_RECORD_SIZE;
-                        if offset + MFT_RECORD_SIZE <= chunk.bytes_read {
-                            let record_buffer = &mut chunk_bytes[offset..offset + MFT_RECORD_SIZE];
-
-                            if record_buffer[..4] == *b"FILE" && apply_fixup(record_buffer) {
-                                let flags =
-                                    u16::from_le_bytes([record_buffer[22], record_buffer[23]]);
-                                if (flags & 1) != 0 {
-                                    let base_file_ref = u64::from_le_bytes([
-                                        record_buffer[32],
-                                        record_buffer[33],
-                                        record_buffer[34],
-                                        record_buffer[35],
-                                        record_buffer[36],
-                                        record_buffer[37],
-                                        record_buffer[38],
-                                        record_buffer[39],
-                                    ]);
-                                    let base_record_id = base_file_ref & 0x0000_ffff_ffff_ffff;
-
-                                    if (record_id >= 16 && base_record_id == 0)
-                                        || TAKE_RESERVED_NTFS_RECORDS
-                                    {
-                                        let attrs = parse_attributes(record_buffer);
-                                        let extracted_links = extract_all_links_from_record(&attrs);
-                                        let is_dir = (flags & 2) != 0;
-
-                                        let mut modified = 0u32;
-                                        let mut created = 0u32;
-
-                                        for attr in &attrs {
-                                            if attr.ty == 0x10
-                                                && !attr.is_non_resident
-                                                && let Some((cre, mod_t)) =
-                                                    parse_standard_information_timestamps(
-                                                        attr.payload,
-                                                    )
-                                            {
-                                                created = cre;
-                                                modified = mod_t;
-                                                break;
-                                            }
-                                        }
-
-                                        if let Some(first) = extracted_links.first() {
-                                            let name_id = sharded_pool_clone
-                                                .get_or_insert(first.name.as_bytes());
-                                            let size = if is_dir { 0 } else { first.size };
-
-                                            let mut entry_flags = 0u8;
-                                            if is_dir {
-                                                entry_flags |= 1;
-                                            }
-                                            if first.has_attr_list {
-                                                entry_flags |= 4;
-                                            }
-
-                                            *entry_slot = Some(MftEntry {
-                                                size,
-                                                parent_record_id: first.parent_ref,
-                                                modified_timestamp: modified,
-                                                created_timestamp: created,
-                                                name_id: name_id.0,
-                                                flags: entry_flags,
-                                                _padding: [0; 3],
-                                            });
-
-                                            if extracted_links.len() > 1 {
-                                                local_links.extend(extracted_links[1..].to_vec());
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                        if offset + MFT_RECORD_SIZE > chunk.bytes_read {
+                            continue;
                         }
+                        let record_buffer = &mut chunk_bytes[offset..offset + MFT_RECORD_SIZE];
+
+                        if !(record_buffer[..4] == *b"FILE" && apply_fixup(record_buffer)) {
+                            continue;
+                        }
+                        let flags = u16::from_le_bytes([record_buffer[22], record_buffer[23]]);
+                        if (flags & 1) == 0 {
+                            continue;
+                        }
+
+                        let base_file_ref = u64::from_le_bytes([
+                            record_buffer[32],
+                            record_buffer[33],
+                            record_buffer[34],
+                            record_buffer[35],
+                            record_buffer[36],
+                            record_buffer[37],
+                            record_buffer[38],
+                            record_buffer[39],
+                        ]);
+                        let base_record_id = base_file_ref & 0x0000_ffff_ffff_ffff;
+
+                        if !(TAKE_RESERVED_NTFS_RECORDS || record_id >= 16) {
+                            continue;
+                        }
+                        let attrs = parse_attributes(record_buffer);
+                        let mut metadata = extract_metadata_info(
+                            &attrs,
+                            if base_record_id == 0 {
+                                record_id as u64
+                            } else {
+                                base_record_id
+                            },
+                            record_id as u64,
+                        );
+
+                        if metadata.links.is_empty() && !metadata.has_attr_list {
+                            continue;
+                        }
+
+                        let is_dir = (flags & 2) != 0;
+
+                        let mut entry_flags = 0u8;
+                        if metadata.has_attr_list {
+                            entry_flags |= 4;
+                        }
+
+                        if base_record_id != 0 {
+                            entry_flags |= 16;
+                        }
+
+                        let size = if is_dir {
+                            entry_flags |= 1;
+                            0
+                        } else {
+                            if !metadata.size_is_trusted {
+                                entry_flags |= 8;
+                            }
+                            metadata.size
+                        };
+
+                        let (parent_record_id, name_id, name_priority) = if base_record_id == 0
+                            && let Some(first) = metadata.links.pop()
+                        {
+                            let name_id = sharded_pool.get_or_insert(first.name.as_bytes());
+                            (first.parent_ref, name_id.0, first.priority)
+                        } else {
+                            (base_record_id, 0, 0)
+                        };
+
+                        if !metadata.links.is_empty() {
+                            local_links.extend(metadata.links);
+                        }
+
+                        *entry_slot = Some(MftEntry {
+                            size,
+                            parent_record_id,
+                            modified_timestamp: metadata.modified,
+                            created_timestamp: metadata.created,
+                            name_id,
+                            name_priority,
+                            flags: entry_flags,
+                            _padding: [0; 2],
+                        });
                     }
 
                     if !local_links.is_empty() {
-                        side_channel_links_clone.lock().extend(local_links);
+                        side_channel_links.lock().extend(local_links);
                     }
 
                     // Recycle the empty page buffer
-                    let _ = empty_tx_clone.send(chunk.buffer);
+                    let _ = empty_tx.send(chunk.buffer);
                 });
             } else {
                 // Restore the slice if bounds checking fails
@@ -786,9 +866,93 @@ fn process_mft_chunks(
             }
         }
     });
+    let mut side_channel_links = side_channel_links.into_inner();
+
+    // Deterministic ordering based on the record id where a link was found:
+    side_channel_links.sort_by_key(|link| (link.record_id, link.parent_ref, link.source_id));
+
+    // Extension record processing - deduplicate links in same parent folder
+    {
+        let mut index = 0;
+        let mut names_and_priorities = HashMap::new();
+        while let Some(link) = side_channel_links.get(index) {
+            if let Some(Some(entry)) = mft_entries.get_mut(link.record_id as usize) {
+                if entry.name_id == 0 && entry.parent_record_id == 0 {
+                    // The first name/link was found in an extension record, move into record
+                    let name_id = sharded_pool.get_or_insert(link.name.as_bytes());
+                    entry.parent_record_id = link.parent_ref;
+                    entry.name_id = name_id.0;
+                    entry.name_priority = link.priority;
+                } else if entry.parent_record_id == link.parent_ref {
+                    // Base record holds filename for this parent
+                    if entry.name_priority < link.priority {
+                        let name_id = sharded_pool.get_or_insert(link.name.as_bytes());
+                        entry.name_id = name_id.0;
+                    }
+                } else {
+                    // The base record doesn't directly contain a link for this parent folder
+                    let prev_link_index = names_and_priorities
+                        .entry((link.record_id, link.parent_ref))
+                        .or_insert(index);
+
+                    if *prev_link_index == index {
+                        // First link with this parent for the mft record so keep it:
+                        index += 1;
+                        continue;
+                    } else if side_channel_links[*prev_link_index].priority < link.priority {
+                        // New link has higher priority so prefer it
+                        side_channel_links.swap(*prev_link_index, index);
+                    }
+                }
+            }
+            // Most cases result in deleting the duplicated link:
+            side_channel_links.swap_remove(index);
+        }
+    }
+
+    // Extension record processing - get metadata from extension records and remove records without names:
+    for record_id in 0..mft_entries.len() {
+        let entry_slot = &mut mft_entries[record_id];
+        let Some(extension) = entry_slot.clone() else {
+            continue;
+        };
+        if extension.flags & 16 == 0 {
+            // regular record:
+            if extension.name_id == 0 && extension.parent_record_id == 0 {
+                // Record without any link (could have found a name in an extension record):
+                *entry_slot = None;
+            }
+            continue;
+        }
+        // Do NOT treat extension records as files (would cause duplicates):
+        *entry_slot = None;
+
+        let Some(Some(parent)) = mft_entries.get_mut(extension.parent_record_id as usize) else {
+            continue;
+        };
+        let untrusted_size = (extension.flags & 8) != 0;
+        let untrusted_parent_size = (parent.flags & 8) != 0;
+        match (untrusted_size, untrusted_parent_size) {
+            // parent is correct:
+            (true, false) => {}
+            (false, false) if parent.size == extension.size => {}
+            // extension record is correct:
+            (false, true) => {
+                parent.size = extension.size;
+                parent.flags &= !8; // disable untrusted_size flag
+            }
+            // size is likely incorrect:
+            _ => {
+                if parent.size == 0 {
+                    parent.size = extension.size; // use better fallback size
+                }
+                parent.flags |= 8;
+            }
+        }
+    }
 
     // 1. Compile the total size of our structural mapping array (including secondary hardlinks)
-    let total_entries = mft_entries.len() + side_channel_links.lock().len();
+    let total_entries = mft_entries.len() + side_channel_links.len();
     let mut first_child = vec![crate::arena::NO_INDEX; total_entries];
     let mut next_sibling = vec![crate::arena::NO_INDEX; total_entries];
 
@@ -804,18 +968,17 @@ fn process_mft_chunks(
     }
 
     // 3. Append secondary virtual links (hardlinks) safely on the single main thread and build structural sibling links
-    for link in side_channel_links.lock().drain(..) {
+    for link in side_channel_links {
         let virt_id = mft_entries.len() as u64;
+        let Some(Some(entry)) = mft_entries.get(link.record_id as usize) else {
+            continue;
+        };
         let name_id = sharded_pool.get_or_insert(link.name.as_bytes());
 
         mft_entries.push(Some(MftEntry {
-            size: link.size,
             parent_record_id: link.parent_ref,
-            modified_timestamp: 0,
-            created_timestamp: 0,
             name_id: name_id.0,
-            flags: 0, // Hardlinks are files
-            _padding: [0; 3],
+            ..*entry
         }));
 
         let parent_id = link.parent_ref as usize;
@@ -927,10 +1090,10 @@ fn process_mft_chunks(
                     continue;
                 };
 
-                // Resolve sizes for placeholder system files containing attribute lists
+                // Resolve sizes for files we are uncertain about
                 let mut actual_size = entry.size;
-                if actual_size == 0
-                    && (entry.flags & 4) != 0
+                if allow_manual_fs_checks
+                    && (entry.flags & 8) != 0 // untrusted_size is true
                     && let Some(name_str) = sharded_pool.get_compact_str(entry.name_id)
                 {
                     let mut full_path = reconstruct_path(
@@ -1001,9 +1164,12 @@ fn process_mft_chunks(
 }
 
 /// Helper function to parse an exported, raw $MFT metadata file sequentially on any platform.
+///
+/// If `search_root_path` is `Some` then it should contain the path to a directory
+/// with the same content as the parsed data of the $MFT file.
 fn scan_mft_file_sequential(
     file_path: &Path,
-    search_root_path: &Path,
+    search_root_path: Option<&Path>,
     scan_cancel: &Arc<AtomicBool>,
     event_tx: &Sender<Vec<ScanEvent>>,
     stats: &TraversalStats,
@@ -1060,7 +1226,8 @@ fn scan_mft_file_sequential(
         &filled_rx,
         &empty_tx,
         max_records,
-        search_root_path,
+        search_root_path.unwrap_or(file_path),
+        search_root_path.is_some(),
         scan_cancel,
         event_tx,
         stats,
@@ -1082,7 +1249,7 @@ pub fn try_scan_mft(
         .and_then(|s| s.to_str())
         .is_some_and(|s| s.eq_ignore_ascii_case("$mft"))
     {
-        return scan_mft_file_sequential(root_path, root_path, scan_cancel, event_tx, stats);
+        return scan_mft_file_sequential(root_path, None, scan_cancel, event_tx, stats);
     }
 
     let (raw_disk, volume_path) = {
@@ -1121,7 +1288,7 @@ pub fn try_scan_mft(
                 // $MFT file is available in drive root
                 return scan_mft_file_sequential(
                     &mft_path,
-                    root_path,
+                    Some(root_path),
                     scan_cancel,
                     event_tx,
                     stats,
@@ -1331,6 +1498,7 @@ pub fn try_scan_mft(
         &empty_tx,
         max_records,
         root_path,
+        true,
         scan_cancel,
         event_tx,
         stats,
@@ -1341,6 +1509,7 @@ pub fn try_scan_mft(
 
 /// Resolves the Windows partition volume path from a standard file path
 #[cfg(target_os = "windows")]
+#[must_use]
 fn get_volume_path(path: &Path) -> Option<String> {
     let path_str = path.to_string_lossy();
     let trimmed = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
@@ -1357,6 +1526,7 @@ fn get_volume_path(path: &Path) -> Option<String> {
 
 /// Resolves the partition volume path from a mount file path
 #[cfg(target_os = "linux")]
+#[must_use]
 fn get_volume_path(path: &Path) -> Option<String> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
     let disk = get_disk(path, &disks)?;
@@ -1366,6 +1536,7 @@ fn get_volume_path(path: &Path) -> Option<String> {
 /// Resolves partition paths on non-Windows targets.
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 #[allow(clippy::unnecessary_wraps)]
+#[must_use]
 fn get_volume_path(path: &Path) -> Option<String> {
     Some(path.to_string_lossy().into_owned())
 }
