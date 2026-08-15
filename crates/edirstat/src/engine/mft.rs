@@ -493,6 +493,7 @@ fn extract_metadata_info(attrs: &[AttributeHeader<'_>], main_record_id: u64) -> 
     let mut links = SmallVec::<[ExtractedLink; 1]>::new();
     let mut unnamed_data_size = None;
     let mut has_attr_list = false;
+    let mut has_reparse_point = false;
     let mut fallback_size = 0u64;
 
     let mut modified = 0u32;
@@ -569,6 +570,10 @@ fn extract_metadata_info(attrs: &[AttributeHeader<'_>], main_record_id: u64) -> 
                 // $ATTRIBUTE_LIST Attribute
                 has_attr_list = true;
             }
+            0xC0 => {
+                // $REPARSE_POINT Attribute (WOF compression, Cloud Files, symlinks/junctions)
+                has_reparse_point = true;
+            }
             0x10 if !attr.is_non_resident => {
                 if let Some((cre, mod_t)) = parse_standard_information_timestamps(attr.payload) {
                     created = cre;
@@ -582,7 +587,13 @@ fn extract_metadata_info(attrs: &[AttributeHeader<'_>], main_record_id: u64) -> 
     // Trust the unnamed $DATA stream size if found (greater than 0),
     // otherwise fallback to the filename data_size (catches WOF-compressed/placeholder system files).
     let (actual_size, size_is_trusted) = match unnamed_data_size {
+        // Normal non-empty files with standard $DATA stream:
         Some(size) if size > 0 => (size, true),
+
+        // Genuine empty files: explicitly 0-byte $DATA, 0-byte $FILE_NAME, and no reparse/attr-list:
+        Some(0) if fallback_size == 0 && !has_attr_list && !has_reparse_point => (0, true),
+
+        // Everything else (unnamed $DATA missing, WOF/cloud files with fallback_size > 0, etc.):
         _ => (fallback_size, false),
     };
 
