@@ -216,7 +216,7 @@ jobs:
         uses: swatinem/rust-cache@v2
 
       - name: Install MinGW cross toolchain
-        run: pacman -Syu --noconfirm mingw-w64-gcc
+        run: pacman -Syu --noconfirm --needed mingw-w64-gcc pacman-contrib curl unzip
 
       - name: Configure safe directory for Git
         run: git config --global --add safe.directory "*"
@@ -240,26 +240,27 @@ jobs:
           cp target/x86_64-unknown-linux-gnu/release/edirstat_multivers /home/tux/edirstat-$VERSION-portable-x86_64
           chown tux:tux /home/tux/edirstat-$VERSION-portable-x86_64
 
-          # 3. Clone and build as the tux user to bypass makepkg root restriction
-          sudo -u tux -i bash -c "
-            cd /home/tux
-            rm -rf edirstat-bin
-            git clone https://aur.archlinux.org/edirstat-bin.git
-            cd edirstat-bin
-            
-            # Place precompiled binary in build directory
-            cp /home/tux/edirstat-$VERSION-portable-x86_64 ./
-            
-            # Update version properties
-            sed -i 's/^pkgver=.*/pkgver='$VERSION'/' PKGBUILD
-            sed -i 's/^pkgrel=.*/pkgrel=1/' PKGBUILD
-            
-            # Automatically resolve checksums for the local binary and download metadata
-            updpkgsums
-            
-            # Build and package
-            makepkg -s --noconfirm
-          "
+          # 3. Clone and build as the tux user to bypass makepkg root restriction.
+          sudo -u tux HOME=/home/tux VERSION="$VERSION" bash <<'EOF'
+          set -euo pipefail
+          cd /home/tux
+          rm -rf edirstat-bin
+          git clone https://aur.archlinux.org/edirstat-bin.git
+          cd edirstat-bin
+
+          # Place precompiled binary in build directory
+          cp "/home/tux/edirstat-$VERSION-portable-x86_64" ./
+
+          # Update version properties
+          sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
+          sed -i 's/^pkgrel=.*/pkgrel=1/' PKGBUILD
+
+          # Automatically resolve checksums for the local binary and download metadata
+          updpkgsums
+
+          # Build and package
+          makepkg -s --noconfirm
+          EOF
 
           # 4. Copy the compiled package back to workspace
           mkdir -p staging-linux-installer
