@@ -180,6 +180,7 @@ type-file = Datei
 
 # Explorer Actions
 explorer-action-copy-path = 📋 Pfad kopieren
+explorer-action-open-file = 📄 Datei öffnen
 explorer-action-open-manager = 🗁 Dateimanager öffnen
 explorer-action-refresh-subtree = 🔄 Unterbaum aktualisieren
 explorer-action-move-trash = ♻ In den Papierkorb verschieben
@@ -203,6 +204,7 @@ extensions-hover-files = Dateien: { $count }
 op-up-one-level = Eine Ebene nach oben
 op-refresh-entire-scan = Gesamten Scan aktualisieren
 op-refresh-directory = Ordner aktualisieren
+op-open-file = Datei öffnen
 op-open-file-manager = Im Dateimanager öffnen
 op-open-terminal = Terminal hier öffnen
 op-copy-path = Pfad kopieren
@@ -215,6 +217,8 @@ toast-already-root = Bereits auf der obersten Ebene
 toast-navigated-up = Eine Ebene nach oben navigiert
 toast-refreshing-scan = Gesamter Scan wird aktualisiert...
 toast-refreshing-dir = Ausgewählte Ordner werden aktualisiert...
+toast-opened-file = Geöffnet: { $path }
+toast-failed-open-file = Datei konnte nicht geöffnet werden: { $error }
 toast-opened-manager = Im Dateimanager geöffnet: { $path }
 toast-failed-open-manager = Dateimanager konnte nicht geöffnet werden: { $error }
 toast-opened-terminal = Terminal geöffnet bei: { $path }

@@ -235,6 +235,9 @@ impl GuiApp {
 
         if crate::IS_NATIVE || !crate::HIDE_NA_UI {
             operations = operations.with_group(vec![
+                Box::new(crate::gui::operations::OpenFileOp::new(
+                    shared_state.clone(),
+                )),
                 Box::new(crate::gui::operations::OpenFileManagerOp::new(
                     shared_state.clone(),
                 )),

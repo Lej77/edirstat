@@ -799,8 +799,27 @@ impl GuiApp {
             ui.painter().rect_filled(rect, 4.0, hover_color);
         }
 
-        // Handle selection on Left-Click or Right-Click (outside of the expand button)
-        if clicked {
+        let double_clicked = response.double_clicked()
+            || strip_response
+                .as_ref()
+                .is_some_and(egui::Response::double_clicked);
+
+        // Handle double-click, selection on Left-Click or Right-Click
+        if double_clicked {
+            if node.is_directory() {
+                if is_expanded {
+                    self.table_state.expanded_rows.remove(node_idx);
+                } else {
+                    self.table_state.expanded_rows.insert(node_idx);
+                }
+            } else {
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    let full_path = snapshot.get_full_path(node_idx);
+                    let _ = open::that(std::path::Path::new(&full_path));
+                }
+            }
+        } else if clicked {
             let modifiers = ui.input(|i| i.modifiers);
             self.table_state
                 .handle_row_selection(modifiers, node_idx as usize);
@@ -1701,6 +1720,31 @@ impl GuiApp {
                         );
                         if copy_btn.clicked() {
                             ui.ctx().copy_text(cleaned_path.into_owned());
+                        }
+
+                        // Opening the file directly in system default application is native-only
+                        if !is_dir && (crate::IS_NATIVE || !crate::HIDE_NA_UI) {
+                            let mut open_file_btn = ui
+                                .add_enabled_ui(crate::IS_NATIVE, |ui| {
+                                    draw_action_button(
+                                        ui,
+                                        &t!("explorer-action-open-file"),
+                                        egui::Color32::from_rgb(59, 130, 246), // Blue
+                                        true,
+                                    )
+                                })
+                                .inner;
+                            if !crate::IS_NATIVE {
+                                open_file_btn =
+                                    open_file_btn.on_disabled_hover_text(t!("web-not-available"));
+                            }
+                            if open_file_btn.clicked() {
+                                #[cfg(not(target_family = "wasm"))]
+                                {
+                                    let path = std::path::Path::new(&full_path);
+                                    let _ = open::that(path);
+                                }
+                            }
                         }
 
                         // Opening the system file manager is native-only
