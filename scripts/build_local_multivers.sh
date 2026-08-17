@@ -8,7 +8,7 @@ set -Eeuo pipefail
 TARGET_CPUS="${TARGET_CPUS:-x86-64-v2 x86-64-v3 x86-64-v4 znver3 znver4 znver5 skylake alderlake}"
 MULTIVERS_ZSTD_LEVEL="${MULTIVERS_ZSTD_LEVEL:-20}"
 
-TARGETS="x86_64-unknown-linux-gnu x86_64-pc-windows-gnu"
+TARGETS="${TARGETS:-x86_64-unknown-linux-gnu x86_64-pc-windows-gnu}"
 PKG_NAME="edirstat"
 BIN_NAME="edirstat"
 CRATE_SUBDIR="runner"
