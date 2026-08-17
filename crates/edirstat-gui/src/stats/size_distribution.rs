@@ -243,4 +243,61 @@ mod tests {
         let counts = chart.compute(&snapshot);
         assert_eq!(counts, [0u64; 8]);
     }
+
+    #[test]
+    fn test_size_distribution_bucket_boundaries() {
+        // Boundary sizes land in buckets 0, 1, 2, 7, 7 respectively.
+        let sizes = [9_999u64, 10_000, 100_000, 10_000_000_000, u64::MAX];
+
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let mut nodes = vec![FileNode::new(r_id, None, true, false, 0, 0)];
+        for (i, &size) in sizes.iter().enumerate() {
+            let f_id = pool.get_or_insert(format!("f{i}").as_bytes());
+            let mut node = FileNode::new(f_id, Some(0), false, false, 0, 0);
+            node.size = size;
+            nodes.push(node);
+        }
+
+        let dir_counts = precompute_dir_counts(&nodes);
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(dir_counts),
+        };
+
+        let mut chart = SizeDistributionChart::new();
+        let counts = chart.compute(&snapshot);
+
+        assert_eq!(counts, [1, 1, 1, 0, 0, 0, 0, 2]);
+    }
+
+    #[test]
+    fn test_size_distribution_zero_and_tiny_files() {
+        // Zero-size and 1-byte files both fall below every threshold: bucket 0.
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let z_id = pool.get_or_insert(b"zero");
+        let o_id = pool.get_or_insert(b"one");
+
+        let mut nodes = vec![
+            FileNode::new(r_id, None, true, false, 0, 0),
+            FileNode::new(z_id, Some(0), false, false, 0, 0),
+            FileNode::new(o_id, Some(0), false, false, 0, 0),
+        ];
+        nodes[1].size = 0;
+        nodes[2].size = 1;
+
+        let dir_counts = precompute_dir_counts(&nodes);
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(dir_counts),
+        };
+
+        let mut chart = SizeDistributionChart::new();
+        let counts = chart.compute(&snapshot);
+
+        assert_eq!(counts, [2, 0, 0, 0, 0, 0, 0, 0]);
+    }
 }

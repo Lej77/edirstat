@@ -308,4 +308,38 @@ mod tests {
         let last_day = ((1_686_657_845 + 5004 * 86400) / 86400) * 86400;
         assert_eq!(chart.sorted_days[4999], last_day);
     }
+
+    #[test]
+    fn test_temporal_timeline_day_boundary_alignment() {
+        // ts 86_399 buckets to day 0; 86_400 and 90_000 share day 86_400.
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let f1_id = pool.get_or_insert(b"f1");
+        let f2_id = pool.get_or_insert(b"f2");
+        let f3_id = pool.get_or_insert(b"f3");
+
+        let mut nodes = vec![
+            FileNode::new(r_id, None, true, false, 0, 0),
+            FileNode::new(f1_id, Some(0), false, false, 86_399, 0),
+            FileNode::new(f2_id, Some(0), false, false, 86_400, 0),
+            FileNode::new(f3_id, Some(0), false, false, 90_000, 0),
+        ];
+        nodes[1].size = 100;
+        nodes[2].size = 200;
+        nodes[3].size = 300;
+
+        let dir_counts = precompute_dir_counts(&nodes);
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(dir_counts),
+        };
+
+        let mut chart = TemporalTimelineChart::new();
+        chart.compute(&snapshot);
+
+        assert_eq!(chart.sorted_days, vec![0, 86_400]);
+        assert_eq!(chart.daily_totals.get(&0), Some(&(100, 1)));
+        assert_eq!(chart.daily_totals.get(&86_400), Some(&(500, 2)));
+    }
 }

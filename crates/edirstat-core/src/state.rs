@@ -67,3 +67,80 @@ impl SharedState {
         self.current_snapshot.store(Arc::new(snapshot));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arena::{FileNode, StringId};
+
+    #[test]
+    fn test_traversal_stats_default_zeroed() {
+        let stats = TraversalStats::default();
+        assert_eq!(stats.files_scanned.load(Ordering::SeqCst), 0);
+        assert_eq!(stats.dirs_scanned.load(Ordering::SeqCst), 0);
+        assert_eq!(stats.bytes_scanned.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_traversal_stats_clone_shares_counters() {
+        let stats = TraversalStats::default();
+        let clone = stats.clone();
+
+        stats.files_scanned.fetch_add(7, Ordering::SeqCst);
+        clone.dirs_scanned.fetch_add(3, Ordering::SeqCst);
+        stats.bytes_scanned.fetch_add(1024, Ordering::SeqCst);
+
+        assert_eq!(clone.files_scanned.load(Ordering::SeqCst), 7);
+        assert_eq!(stats.dirs_scanned.load(Ordering::SeqCst), 3);
+        assert_eq!(clone.bytes_scanned.load(Ordering::SeqCst), 1024);
+    }
+
+    #[test]
+    fn test_traversal_stats_reset_zeroes_counters() {
+        let stats = TraversalStats::default();
+        stats.files_scanned.fetch_add(5, Ordering::SeqCst);
+        stats.dirs_scanned.fetch_add(2, Ordering::SeqCst);
+        stats.bytes_scanned.fetch_add(4096, Ordering::SeqCst);
+
+        stats.reset();
+
+        assert_eq!(stats.files_scanned.load(Ordering::SeqCst), 0);
+        assert_eq!(stats.dirs_scanned.load(Ordering::SeqCst), 0);
+        assert_eq!(stats.bytes_scanned.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_shared_state_new_is_empty() {
+        let state = SharedState::new();
+        assert_eq!(state.current_snapshot.load().nodes.len(), 0);
+        assert!(!state.is_scanning.load(Ordering::SeqCst));
+        assert!(!state.scan_cancel.load(Ordering::SeqCst));
+        assert!(state.extension_stats.load().is_empty());
+    }
+
+    #[test]
+    fn test_shared_state_store_snapshot_swaps() {
+        let state = SharedState::new();
+        let before = state.current_snapshot.load();
+        assert_eq!(before.nodes.len(), 0);
+
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(vec![FileNode::new(
+                StringId(0),
+                None,
+                true,
+                false,
+                0,
+                0,
+            )])),
+            string_pool: Arc::new(StringPool::new()),
+            dir_counts: Arc::new(vec![0]),
+        };
+        state.store_snapshot(snapshot);
+
+        let after = state.current_snapshot.load();
+        assert_eq!(after.nodes.len(), 1);
+        // Arc-swap semantics: a guard loaded before the store still sees the old snapshot.
+        assert_eq!(before.nodes.len(), 0);
+    }
+}

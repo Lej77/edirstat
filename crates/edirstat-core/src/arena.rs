@@ -833,6 +833,200 @@ mod tests {
         assert_eq!(snapshot.resolve_path_index("/wrong/root"), None);
         assert_eq!(snapshot.resolve_path_index(""), None);
     }
+
+    #[test]
+    fn test_string_pool_invalid_utf8_collapses_to_empty() {
+        let mut pool = StringPool::new();
+        let id_invalid = pool.get_or_insert(&[0xFF, 0xFE]);
+        let id_empty = pool.get_or_insert(b"");
+        // Invalid UTF-8 collapses to the empty string, sharing its handle.
+        assert_eq!(id_invalid, id_empty);
+        assert_eq!(pool.get(id_invalid), Some(""));
+    }
+
+    #[test]
+    fn test_string_pool_get_out_of_range() {
+        let pool = StringPool::new();
+        assert_eq!(pool.get(StringId(0)), None);
+        assert_eq!(pool.get(StringId(u32::MAX)), None);
+    }
+
+    #[test]
+    fn test_get_full_path_lone_root() {
+        let mut pool = StringPool::new();
+        let root_id = pool.get_or_insert(b"lone_root");
+        let nodes = vec![FileNode::new(root_id, None, true, false, 0, 0)];
+        let dir_counts = precompute_dir_counts(&nodes);
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(dir_counts),
+        };
+        assert_eq!(snapshot.get_full_path(0), "lone_root");
+    }
+
+    #[test]
+    fn test_get_full_path_oob_parent_terminates() {
+        let mut pool = StringPool::new();
+        let root_id = pool.get_or_insert(b"root");
+        let child_id = pool.get_or_insert(b"child");
+        let mut nodes = vec![
+            FileNode::new(root_id, None, true, false, 0, 0),
+            FileNode::new(child_id, Some(0), false, false, 0, 0),
+        ];
+        nodes[0].first_child = 1;
+        // Corrupt parent pointer: well past the end of the arena. The walk must
+        // stop there instead of panicking, returning the partial path.
+        nodes[1].parent = 5000;
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(vec![]),
+        };
+        assert_eq!(snapshot.get_full_path(1), "child");
+        assert_eq!(snapshot.get_full_path(0), "root");
+    }
+
+    #[test]
+    fn test_resolve_path_index_separator_tolerance() {
+        let mut pool = StringPool::new();
+        let root = pool.get_or_insert(b"/root");
+        let child = pool.get_or_insert(b"child");
+        let mut nodes = vec![
+            FileNode::new(root, None, true, false, 0, 0),
+            FileNode::new(child, Some(0), true, false, 0, 0),
+        ];
+        nodes[0].first_child = 1;
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(vec![]),
+        };
+
+        assert_eq!(snapshot.resolve_path_index("/root/child"), Some(1));
+        // Duplicate interior separators and a trailing separator are skipped.
+        assert_eq!(snapshot.resolve_path_index("/root//child/"), Some(1));
+        assert_eq!(snapshot.resolve_path_index("/root///child//"), Some(1));
+    }
+
+    #[test]
+    fn test_precompute_dir_counts_empty() {
+        let counts = precompute_dir_counts(&[]);
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn test_filenode_from_metadata_no_permission_dir_size() {
+        let dir_meta = EntryMetadata {
+            name: "noperm".into(),
+            is_dir: true,
+            is_symlink: false,
+            len: 999,
+            modified_timestamp: 10,
+            created_timestamp: 20,
+            file_id: (1, 2),
+            no_permission: true,
+        };
+        let dir_node = FileNode::from_metadata(StringId(0), None, &dir_meta);
+        assert!(dir_node.has_no_permission());
+        assert!(dir_node.is_directory());
+        // Directory sizes come from bottom-up propagation, never from `len`.
+        assert_eq!(dir_node.size, 0);
+
+        let file_meta = EntryMetadata {
+            name: "file.bin".into(),
+            is_dir: false,
+            is_symlink: false,
+            len: 999,
+            modified_timestamp: 10,
+            created_timestamp: 20,
+            file_id: (1, 3),
+            no_permission: false,
+        };
+        let file_node = FileNode::from_metadata(StringId(1), None, &file_meta);
+        assert!(!file_node.has_no_permission());
+        assert!(!file_node.is_directory());
+        assert_eq!(file_node.size, 999);
+    }
+
+    #[test]
+    fn test_entry_metadata_from_dir_entry() -> Result<(), crate::EdirstatError> {
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_entry_metadata_fixture");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir)?;
+
+        let file_path = temp_dir.join("file.txt");
+        std::fs::write(&file_path, b"hello world contents!")?; // 21 bytes
+        std::fs::create_dir(temp_dir.join("subdir"))?;
+
+        let mut file_meta = None;
+        let mut dir_meta = None;
+        for entry in std::fs::read_dir(&temp_dir)? {
+            let entry = entry?;
+            let meta = EntryMetadata::from_dir_entry(&entry).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "from_dir_entry failed")
+            })?;
+            match meta.name.as_str() {
+                "file.txt" => file_meta = Some(meta),
+                "subdir" => dir_meta = Some(meta),
+                _ => {}
+            }
+        }
+
+        let file_meta = file_meta.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "file.txt not found")
+        })?;
+        assert!(!file_meta.is_dir);
+        assert!(!file_meta.is_symlink);
+        assert_eq!(file_meta.len, 21);
+        #[cfg(unix)]
+        assert_ne!(file_meta.file_id, (0, 0));
+
+        let dir_meta = dir_meta
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "subdir not found"))?;
+        assert!(dir_meta.is_dir);
+        assert!(!dir_meta.is_symlink);
+
+        #[cfg(unix)]
+        {
+            let link_path = temp_dir.join("link.txt");
+            std::os::unix::fs::symlink("file.txt", &link_path)?;
+            let entry = std::fs::read_dir(&temp_dir)?
+                .find_map(|e| {
+                    let e = e.ok()?;
+                    (e.file_name() == "link.txt").then_some(e)
+                })
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "link.txt not found")
+                })?;
+            let link_meta = EntryMetadata::from_dir_entry(&entry).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "from_dir_entry failed")
+            })?;
+            assert!(link_meta.is_symlink);
+            assert!(!link_meta.is_dir);
+            // lstat semantics: the length is the link's own (the target path
+            // string length), not the 21-byte target file's length.
+            assert_eq!(link_meta.len, "file.txt".len() as u64);
+            assert_ne!(link_meta.len, file_meta.len);
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_contains_case_insensitive_edge_cases() {
+        // Empty needle matches anything, even an empty haystack.
+        assert!(contains_case_insensitive("", ""));
+        // A needle longer than the haystack can never match.
+        assert!(!contains_case_insensitive("hi", "hello"));
+        // ASCII window comparison is case-insensitive.
+        assert!(contains_case_insensitive("HeLLo", "hello"));
+        // The non-ASCII fallback lowercases the haystack before searching.
+        assert!(contains_case_insensitive("HÉLLÖ WÖRLD", "héllö"));
+    }
 }
 
 #[derive(Debug, Clone)]

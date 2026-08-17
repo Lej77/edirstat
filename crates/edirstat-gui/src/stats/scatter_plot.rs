@@ -263,4 +263,64 @@ mod tests {
         assert_eq!(chart.top_files[0], (2, 1000));
         assert_eq!(chart.top_files[1], (1, 500));
     }
+
+    #[test]
+    fn test_scatter_plot_truncates_to_5000() {
+        // 5,100 files with distinct sizes: the 5,000 largest are kept, largest first.
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let mut nodes = vec![FileNode::new(r_id, None, true, false, 0, 0)];
+        for i in 1..=5100u64 {
+            let f_id = pool.get_or_insert(format!("f{i}").as_bytes());
+            let mut node = FileNode::new(f_id, Some(0), false, false, 0, 0);
+            node.size = i;
+            nodes.push(node);
+        }
+
+        let dir_counts = precompute_dir_counts(&nodes);
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(dir_counts),
+        };
+
+        let mut chart = FileAgeSizeScatterChart::new();
+        chart.compute(&snapshot);
+
+        assert_eq!(chart.top_files.len(), 5000);
+        assert_eq!(chart.top_files[0], (5100, 5100));
+        // Sizes 1..=100 are the ones dropped.
+        assert!(chart.top_files.iter().all(|&(_, size)| size >= 101));
+    }
+
+    #[test]
+    fn test_scatter_plot_max_timestamp_ignores_directories() {
+        // Directory timestamps never feed max_timestamp; zero-size files still do,
+        // even though they are excluded from top_files.
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let f1_id = pool.get_or_insert(b"f1");
+        let f2_id = pool.get_or_insert(b"f2");
+
+        let mut nodes = vec![
+            FileNode::new(r_id, None, true, false, 999_999_999, 0),
+            FileNode::new(f1_id, Some(0), false, false, 1000, 0),
+            FileNode::new(f2_id, Some(0), false, false, 5000, 0),
+        ];
+        nodes[1].size = 100;
+        nodes[2].size = 0;
+
+        let dir_counts = precompute_dir_counts(&nodes);
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(dir_counts),
+        };
+
+        let mut chart = FileAgeSizeScatterChart::new();
+        chart.compute(&snapshot);
+
+        assert_eq!(chart.max_timestamp, 5000);
+        assert_eq!(chart.top_files, vec![(1, 100)]);
+    }
 }

@@ -1217,4 +1217,435 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         Ok(())
     }
+
+    /// Builds a small three-node fixture tree (a root dir with two file
+    /// children) in DFS pre-order, together with its string pool.
+    fn build_small_tree() -> (StringPool, Vec<FileNode>) {
+        let mut pool = StringPool::new();
+        let r = pool.get_or_insert(b"root");
+        let a = pool.get_or_insert(b"a.txt");
+        let b = pool.get_or_insert(b"b.txt");
+        let mut nodes = vec![
+            FileNode::new(r, None, true, false, 100, 100),
+            FileNode::new(a, Some(0), false, false, 200, 150),
+            FileNode::new(b, Some(0), false, false, 300, 250),
+        ];
+        nodes[0].first_child = 1;
+        nodes[1].next_sibling = 2;
+        nodes[0].size = 30;
+        nodes[1].size = 10;
+        nodes[2].size = 20;
+        nodes[0].file_count = 2;
+        (pool, nodes)
+    }
+
+    #[test]
+    fn test_compressed_bytes_roundtrip() -> Result<(), crate::EdirstatError> {
+        let (pool, nodes) = build_small_tree();
+
+        let bytes = save_snapshot_to_bytes(&nodes, &pool, true)?;
+        assert!(bytes.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]));
+
+        let (arena, pool_loaded) = load_snapshot_from_bytes(&bytes)?;
+        let loaded = arena.nodes();
+        assert_eq!(loaded.len(), nodes.len());
+        assert_eq!(pool_loaded.get(loaded[0].name_id), Some("root"));
+        assert_eq!(pool_loaded.get(loaded[1].name_id), Some("a.txt"));
+        assert_eq!(pool_loaded.get(loaded[2].name_id), Some("b.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_uncompressed_to_bytes_roundtrip() -> Result<(), crate::EdirstatError> {
+        let (pool, nodes) = build_small_tree();
+
+        let bytes = save_snapshot_to_bytes(&nodes, &pool, false)?;
+        assert!(bytes.starts_with(b"EDST"));
+
+        let (arena, pool_loaded) = load_snapshot_from_bytes(&bytes)?;
+        let loaded = arena.nodes();
+        assert_eq!(loaded.len(), nodes.len());
+        assert_eq!(loaded[1].size, 10);
+        assert_eq!(pool_loaded.get(loaded[2].name_id), Some("b.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_field_exact_roundtrip() -> Result<(), crate::EdirstatError> {
+        let mut pool = StringPool::new();
+        let r = pool.get_or_insert(b"root");
+        let link = pool.get_or_insert(b"link");
+        let sub = pool.get_or_insert(b"sub");
+
+        let mut nodes = vec![
+            FileNode::new(r, None, true, false, 1_700_000_000, 1_600_000_000),
+            FileNode::new(link, Some(0), false, true, 1_700_000_100, 1_650_000_000),
+            FileNode::new(sub, Some(0), true, false, 1_700_000_050, 1_700_000_060),
+        ];
+        nodes[0].first_child = 1;
+        nodes[1].next_sibling = 2;
+        nodes[0].size = 54321;
+        nodes[0].file_count = 1;
+        nodes[1].size = 12345;
+        nodes[1].flags |= FileNode::FLAG_NO_PERMISSION;
+        nodes[2].file_count = 7;
+
+        let bytes = save_snapshot_to_bytes(&nodes, &pool, false)?;
+        let (arena, pool_loaded) = load_snapshot_from_bytes(&bytes)?;
+        let loaded = arena.nodes();
+        assert_eq!(loaded.len(), nodes.len());
+
+        for (orig, got) in nodes.iter().zip(loaded.iter()) {
+            assert_eq!(got.name_id, orig.name_id);
+            assert_eq!(got.parent, orig.parent);
+            assert_eq!(got.first_child, orig.first_child);
+            assert_eq!(got.next_sibling, orig.next_sibling);
+            assert_eq!(got.size, orig.size);
+            assert_eq!(got.modified_timestamp, orig.modified_timestamp);
+            assert_eq!(got.created_timestamp, orig.created_timestamp);
+            assert_eq!(got.file_count, orig.file_count);
+            assert_eq!(got.flags, orig.flags);
+            assert_eq!(pool_loaded.get(got.name_id), pool.get(orig.name_id));
+        }
+        assert!(loaded[1].is_symlink());
+        assert!(loaded[1].has_no_permission());
+        Ok(())
+    }
+
+    #[test]
+    fn test_structure_roundtrip_full_paths() -> Result<(), crate::EdirstatError> {
+        use crate::arena::{FileArenaSnapshot, NodeStorage, precompute_dir_counts};
+
+        let mut pool = StringPool::new();
+        let root = pool.get_or_insert(b"/root");
+        let dir_a = pool.get_or_insert(b"dir_a");
+        let dir_b = pool.get_or_insert(b"dir_b");
+        let a1 = pool.get_or_insert(b"a1.txt");
+        let a2 = pool.get_or_insert(b"a2.txt");
+        let b1 = pool.get_or_insert(b"b1.txt");
+        let b2 = pool.get_or_insert(b"b2.txt");
+        let top = pool.get_or_insert(b"top.txt");
+
+        // Three levels, stored in DFS pre-order so indices survive the roundtrip.
+        let mut nodes = vec![
+            FileNode::new(root, None, true, false, 0, 0), // 0 /root
+            FileNode::new(dir_a, Some(0), true, false, 0, 0), // 1 /root/dir_a
+            FileNode::new(a1, Some(1), false, false, 0, 0), // 2
+            FileNode::new(a2, Some(1), false, false, 0, 0), // 3
+            FileNode::new(dir_b, Some(0), true, false, 0, 0), // 4 /root/dir_b
+            FileNode::new(b1, Some(4), false, false, 0, 0), // 5
+            FileNode::new(b2, Some(4), false, false, 0, 0), // 6
+            FileNode::new(top, Some(0), false, false, 0, 0), // 7 /root/top.txt
+        ];
+        nodes[0].first_child = 1;
+        nodes[1].next_sibling = 4;
+        nodes[1].first_child = 2;
+        nodes[2].next_sibling = 3;
+        nodes[4].next_sibling = 7;
+        nodes[4].first_child = 5;
+        nodes[5].next_sibling = 6;
+
+        let node_count = nodes.len();
+        let dir_counts = precompute_dir_counts(&nodes);
+        let bytes = save_snapshot_to_bytes(&nodes, &pool, false)?;
+        let original = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(dir_counts),
+        };
+
+        let (arena, pool_loaded) = load_snapshot_from_bytes(&bytes)?;
+        assert_eq!(arena.nodes().len(), node_count);
+        let loaded_dir_counts = precompute_dir_counts(arena.nodes());
+        let loaded = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Mmapped(arena)),
+            string_pool: Arc::new(pool_loaded),
+            dir_counts: Arc::new(loaded_dir_counts),
+        };
+
+        for idx in 0..node_count as u32 {
+            assert_eq!(
+                loaded.get_full_path(idx),
+                original.get_full_path(idx),
+                "path mismatch at node {idx}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_created_eq_modified_shortcut_roundtrip() -> Result<(), crate::EdirstatError> {
+        let mut pool = StringPool::new();
+        let r = pool.get_or_insert(b"root");
+        let same = pool.get_or_insert(b"same.txt");
+        let diff = pool.get_or_insert(b"diff.txt");
+
+        let mut nodes = vec![
+            FileNode::new(r, None, true, false, 1_000_000, 1_000_000),
+            // created == modified == parent's modified: both timestamp shortcuts.
+            FileNode::new(same, Some(0), false, false, 1_000_000, 1_000_000),
+            // created != modified: full delta encoding.
+            FileNode::new(diff, Some(0), false, false, 1_500_000, 1_200_000),
+        ];
+        nodes[0].first_child = 1;
+        nodes[1].next_sibling = 2;
+
+        let bytes = save_snapshot_to_bytes(&nodes, &pool, false)?;
+        let (arena, _) = load_snapshot_from_bytes(&bytes)?;
+        let n = arena.nodes();
+        assert_eq!(n.len(), 3);
+        assert_eq!(n[0].modified_timestamp, 1_000_000);
+        assert_eq!(n[0].created_timestamp, 1_000_000);
+        assert_eq!(n[1].modified_timestamp, 1_000_000);
+        assert_eq!(n[1].created_timestamp, 1_000_000);
+        assert_eq!(n[2].modified_timestamp, 1_500_000);
+        assert_eq!(n[2].created_timestamp, 1_200_000);
+        Ok(())
+    }
+
+    #[test]
+    fn test_empty_name_roundtrip() -> Result<(), crate::EdirstatError> {
+        let mut pool = StringPool::new();
+        let empty = pool.get_or_insert(b"");
+        let kid = pool.get_or_insert(b"kid");
+
+        let mut nodes = vec![
+            FileNode::new(empty, None, true, false, 0, 0),
+            FileNode::new(kid, Some(0), false, false, 0, 0),
+        ];
+        nodes[0].first_child = 1;
+
+        let bytes = save_snapshot_to_bytes(&nodes, &pool, false)?;
+        let (arena, pool_loaded) = load_snapshot_from_bytes(&bytes)?;
+        let n = arena.nodes();
+        assert_eq!(n.len(), 2);
+        assert_eq!(pool_loaded.get(n[0].name_id), Some(""));
+        assert_eq!(pool_loaded.get(n[1].name_id), Some("kid"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_truncated_string_pool() -> Result<(), crate::EdirstatError> {
+        let (pool, nodes) = build_small_tree();
+        let mut bytes = save_snapshot_to_bytes(&nodes, &pool, false)?;
+
+        // Cut the file one byte into the string pool region. The header's
+        // uncompressed_size is patched down to match the shortened file so the
+        // loader reaches the string-pool bounds check (TruncatedStringPool)
+        // instead of bailing out at the payload-length check (TruncatedNodes).
+        let mut header = FileHeader::zeroed();
+        bytemuck::bytes_of_mut(&mut header).copy_from_slice(&bytes[0..72]);
+        header = header.from_le();
+        let cut = 72 + header.string_pool_offset as usize + 1;
+        bytes.truncate(cut);
+        header.uncompressed_size = (cut - 72) as u64;
+        bytes[0..72].copy_from_slice(bytemuck::bytes_of(&header.to_le()));
+
+        let res = load_snapshot_from_bytes(&bytes);
+        assert!(matches!(
+            res,
+            Err(crate::EdirstatError::TruncatedStringPool)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_unsupported_version_carries_value() {
+        for version in [1u16, 99] {
+            let header = FileHeader {
+                magic: *b"EDST",
+                version,
+                _padding: 0,
+                uncompressed_size: 0,
+                node_count: 0,
+                string_pool_offset: 72,
+                string_pool_length: 0,
+                reserved: [0; 4],
+            };
+            let bytes = bytemuck::bytes_of(&header.to_le()).to_vec();
+            let res = load_snapshot_from_bytes(&bytes);
+            assert!(
+                matches!(res, Err(crate::EdirstatError::UnsupportedVersion(v)) if v == version),
+                "expected UnsupportedVersion({version}), got {res:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_declared_nodes_exceed_payload() {
+        // A header advertising huge counts with only a tiny payload must be
+        // rejected at the payload-length check, before any node allocation.
+        let header = FileHeader {
+            magic: *b"EDST",
+            version: FILE_VERSION_V3,
+            _padding: 0,
+            uncompressed_size: 1_000_000_000,
+            node_count: 10_000_000,
+            string_pool_offset: 0,
+            string_pool_length: 0,
+            reserved: [0; 4],
+        };
+        let mut bytes = bytemuck::bytes_of(&header.to_le()).to_vec();
+        bytes.extend_from_slice(&[0u8; 16]);
+
+        let res = load_snapshot_from_bytes(&bytes);
+        assert!(matches!(res, Err(crate::EdirstatError::TruncatedNodes)));
+    }
+
+    #[test]
+    fn test_disk_roundtrip_both_compressions() -> Result<(), crate::EdirstatError> {
+        let (pool, nodes) = build_small_tree();
+        let temp_dir = std::env::current_dir()?.join("target");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let path_compressed = temp_dir.join("test_disk_roundtrip_zstd.edst");
+        let path_raw = temp_dir.join("test_disk_roundtrip_raw.edst");
+        let _ = std::fs::remove_file(&path_compressed);
+        let _ = std::fs::remove_file(&path_raw);
+
+        for (path, compress) in [(&path_compressed, true), (&path_raw, false)] {
+            save_snapshot(&nodes, &pool, path, compress)?;
+            let (arena, pool_loaded) = load_snapshot(path)?;
+            let loaded = arena.nodes();
+            assert_eq!(loaded.len(), nodes.len());
+            assert_eq!(loaded[1].size, 10);
+            assert_eq!(pool_loaded.get(loaded[2].name_id), Some("b.txt"));
+        }
+
+        let _ = std::fs::remove_file(&path_compressed);
+        let _ = std::fs::remove_file(&path_raw);
+        Ok(())
+    }
+
+    #[test]
+    fn test_large_tree_roundtrip() -> Result<(), crate::EdirstatError> {
+        const DIRS: usize = 50;
+        const FILES_PER_DIR: usize = 39;
+        const DIR_WIDTH: usize = 1 + FILES_PER_DIR;
+
+        // Root with 50 directories of 39 files each (2001 nodes), laid out in
+        // DFS pre-order so loaded indices match the originals.
+        let mut pool = StringPool::new();
+        let root_id = pool.get_or_insert(b"root");
+        let mut nodes = vec![FileNode::new(root_id, None, true, false, 1000, 1000)];
+        for d in 0..DIRS {
+            let dir_id = pool.get_or_insert(format!("dir_{d:02}").as_bytes());
+            let dir_idx = nodes.len() as u32;
+            nodes.push(FileNode::new(dir_id, Some(0), true, false, 1000, 1000));
+            for f in 0..FILES_PER_DIR {
+                let file_id = pool.get_or_insert(format!("file_{d:02}_{f:02}").as_bytes());
+                let mut node = FileNode::new(file_id, Some(dir_idx), false, false, 2000, 2000);
+                node.size = (d * FILES_PER_DIR + f) as u64 * 7 + 1;
+                nodes.push(node);
+            }
+        }
+
+        nodes[0].first_child = 1;
+        nodes[0].file_count = (DIRS * FILES_PER_DIR) as u32;
+        for d in 0..DIRS {
+            let dir_idx = 1 + d * DIR_WIDTH;
+            if d + 1 < DIRS {
+                nodes[dir_idx].next_sibling = (dir_idx + DIR_WIDTH) as u32;
+            }
+            nodes[dir_idx].first_child = (dir_idx + 1) as u32;
+            nodes[dir_idx].file_count = FILES_PER_DIR as u32;
+            for f in 0..FILES_PER_DIR - 1 {
+                nodes[dir_idx + 1 + f].next_sibling = (dir_idx + 2 + f) as u32;
+            }
+        }
+
+        let bytes = save_snapshot_to_bytes(&nodes, &pool, false)?;
+        let (arena, pool_loaded) = load_snapshot_from_bytes(&bytes)?;
+        let loaded = arena.nodes();
+        assert_eq!(loaded.len(), nodes.len());
+
+        // Per-node sizes survive exactly.
+        for (orig, got) in nodes.iter().zip(loaded.iter()) {
+            assert_eq!(got.size, orig.size);
+        }
+
+        // Sibling order under the root is preserved.
+        let mut dir_names = Vec::new();
+        let mut curr = loaded[0].first_child;
+        while curr != crate::arena::NO_INDEX {
+            let node = &loaded[curr as usize];
+            if let Some(name) = pool_loaded.get(node.name_id) {
+                dir_names.push(name.to_string());
+            }
+            curr = node.next_sibling;
+        }
+        let expected_dirs: Vec<String> = (0..DIRS).map(|d| format!("dir_{d:02}")).collect();
+        assert_eq!(dir_names, expected_dirs);
+
+        // File order within a directory is preserved too (spot-check dir 7).
+        let dir7 = 1 + 7 * DIR_WIDTH;
+        let mut file_names = Vec::new();
+        let mut curr = loaded[dir7].first_child;
+        while curr != crate::arena::NO_INDEX {
+            let node = &loaded[curr as usize];
+            if let Some(name) = pool_loaded.get(node.name_id) {
+                file_names.push(name.to_string());
+            }
+            curr = node.next_sibling;
+        }
+        let expected_files: Vec<String> = (0..FILES_PER_DIR)
+            .map(|f| format!("file_07_{f:02}"))
+            .collect();
+        assert_eq!(file_names, expected_files);
+        Ok(())
+    }
+
+    #[test]
+    fn test_string_pool_dedup_preserved() -> Result<(), crate::EdirstatError> {
+        let mut pool = StringPool::new();
+        let r = pool.get_or_insert(b"root");
+        let same = pool.get_or_insert(b"same.txt");
+
+        let mut nodes = vec![FileNode::new(r, None, true, false, 0, 0)];
+        for i in 0..50u64 {
+            let mut node = FileNode::new(same, Some(0), false, false, 0, 0);
+            node.size = i;
+            nodes.push(node);
+        }
+        nodes[0].first_child = 1;
+        nodes[0].file_count = 50;
+        for (i, node) in nodes.iter_mut().enumerate().take(50).skip(1) {
+            node.next_sibling = (i + 1) as u32;
+        }
+
+        let bytes = save_snapshot_to_bytes(&nodes, &pool, false)?;
+        let (arena, pool_loaded) = load_snapshot_from_bytes(&bytes)?;
+        let loaded = arena.nodes();
+        assert_eq!(loaded.len(), 51);
+
+        // All same-named nodes still share a single interned handle.
+        assert_eq!(loaded[1].name_id, loaded[25].name_id);
+        assert_eq!(pool_loaded.get(loaded[1].name_id), Some("same.txt"));
+        assert_eq!(pool_loaded.get(loaded[25].name_id), Some("same.txt"));
+
+        // The pool holds far fewer strings than the arena holds nodes.
+        let (_arena_str, offsets) = pool_loaded.export_for_save()?;
+        let string_count = offsets.len() - 1;
+        assert_eq!(string_count, 2);
+        assert!(string_count < loaded.len());
+        Ok(())
+    }
+
+    #[test]
+    fn test_zstd_container_of_garbage() -> Result<(), crate::EdirstatError> {
+        // Junk after a zstd magic: not a decodable frame. Even if it somehow
+        // decoded, the payload is far below the 72-byte header minimum, so
+        // this is an error on every path.
+        let mut junk = vec![0x28, 0xB5, 0x2F, 0xFD];
+        junk.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33]);
+        let res = load_snapshot_from_bytes(&junk);
+        assert!(res.is_err(), "undecodable zstd stream must fail: {res:?}");
+
+        // A *valid* zstd frame whose payload is not an EDST snapshot.
+        let garbage = [0xABu8; 128];
+        let frame = zstd::encode_all(&garbage[..], ZSTD_COMPRESSION_LEVEL)?;
+        assert!(frame.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]));
+        let res = load_snapshot_from_bytes(&frame);
+        assert!(matches!(res, Err(crate::EdirstatError::InvalidMagic)));
+        Ok(())
+    }
 }

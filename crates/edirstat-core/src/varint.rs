@@ -111,3 +111,186 @@ pub(super) fn u8_slice_to_u32_vec(bytes: &[u8]) -> Vec<u32> {
     target_bytes.copy_from_slice(bytes);
     vec
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_zigzag_encode_known_vectors() {
+        assert_eq!(zigzag_encode(0), 0);
+        assert_eq!(zigzag_encode(-1), 1);
+        assert_eq!(zigzag_encode(1), 2);
+        assert_eq!(zigzag_encode(-2), 3);
+        assert_eq!(zigzag_encode(2), 4);
+        assert_eq!(zigzag_encode(i64::MIN), u64::MAX);
+        assert_eq!(zigzag_encode(i64::MAX), u64::MAX - 1);
+    }
+
+    #[test]
+    fn test_zigzag_decode_known_vectors() {
+        assert_eq!(zigzag_decode(0), 0);
+        assert_eq!(zigzag_decode(1), -1);
+        assert_eq!(zigzag_decode(2), 1);
+        assert_eq!(zigzag_decode(3), -2);
+        assert_eq!(zigzag_decode(4), 2);
+        assert_eq!(zigzag_decode(u64::MAX), i64::MIN);
+        assert_eq!(zigzag_decode(u64::MAX - 1), i64::MAX);
+    }
+
+    #[test]
+    fn test_zigzag_roundtrip_boundaries() {
+        for value in [
+            0i64,
+            1,
+            -1,
+            i64::MAX,
+            i64::MIN,
+            i64::from(i32::MAX),
+            i64::from(i32::MIN),
+            86400,
+            -86400,
+        ] {
+            assert_eq!(zigzag_decode(zigzag_encode(value)), value);
+        }
+    }
+
+    #[test]
+    fn test_u64_varint_roundtrip_small_range() -> Result<(), crate::EdirstatError> {
+        // 0..=300 covers the 127/128 single-byte -> two-byte boundary.
+        for value in 0..=300u64 {
+            let mut buf = Vec::new();
+            write_u64_varint(&mut buf, value);
+            let mut cursor = 0;
+            assert_eq!(read_u64_varint(&buf, &mut cursor)?, value);
+            assert_eq!(cursor, buf.len());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_u64_varint_roundtrip_boundaries() -> Result<(), crate::EdirstatError> {
+        for value in [
+            u64::MAX,
+            1u64 << 32,
+            1u64 << 63,
+            u64::from(u32::MAX),
+            1u64 << 7,
+            (1u64 << 7) - 1,
+        ] {
+            let mut buf = Vec::new();
+            write_u64_varint(&mut buf, value);
+            let mut cursor = 0;
+            assert_eq!(read_u64_varint(&buf, &mut cursor)?, value);
+            assert_eq!(cursor, buf.len());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_u64_varint_exact_encoding_bytes() {
+        let cases: [(u64, &[u8]); 4] = [
+            (0, &[0x00]),
+            (127, &[0x7F]),
+            (128, &[0x80, 0x01]),
+            (300, &[0xAC, 0x02]),
+        ];
+        for (value, expected) in cases {
+            let mut buf = Vec::new();
+            write_u64_varint(&mut buf, value);
+            assert_eq!(buf, expected);
+        }
+    }
+
+    #[test]
+    fn test_read_u64_varint_truncated_stream() {
+        // Empty slice: nothing can be consumed.
+        let mut cursor = 0;
+        let result = read_u64_varint(&[], &mut cursor);
+        assert!(matches!(
+            result,
+            Err(crate::EdirstatError::Decode(
+                "varint stream ended unexpectedly"
+            ))
+        ));
+        assert_eq!(cursor, 0);
+
+        // Lone continuation byte: consumed, but no terminator followed.
+        let mut cursor = 0;
+        let result = read_u64_varint(&[0x80], &mut cursor);
+        assert!(matches!(
+            result,
+            Err(crate::EdirstatError::Decode(
+                "varint stream ended unexpectedly"
+            ))
+        ));
+        assert_eq!(cursor, 1);
+    }
+
+    #[test]
+    fn test_read_u64_varint_overlong() {
+        // An 11th byte would require a shift >= 64 bits.
+        let buf = [0x80u8; MAX_VARINT_BYTES + 1];
+        let mut cursor = 0;
+        let result = read_u64_varint(&buf, &mut cursor);
+        assert!(matches!(
+            result,
+            Err(crate::EdirstatError::Decode(
+                "overlong varint exceeds 64 bits"
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_u64_max_uses_max_varint_bytes() -> Result<(), crate::EdirstatError> {
+        let mut buf = Vec::new();
+        write_u64_varint(&mut buf, u64::MAX);
+        assert_eq!(buf.len(), MAX_VARINT_BYTES);
+        let mut cursor = 0;
+        assert_eq!(read_u64_varint(&buf, &mut cursor)?, u64::MAX);
+        assert_eq!(cursor, buf.len());
+        Ok(())
+    }
+
+    #[test]
+    fn test_u64_varint_sequence_single_cursor() -> Result<(), crate::EdirstatError> {
+        let values = [0u64, 127, 128, 300, u64::MAX];
+        let mut buf = Vec::new();
+        for &value in &values {
+            write_u64_varint(&mut buf, value);
+        }
+        let mut cursor = 0;
+        for &expected in &values {
+            assert_eq!(read_u64_varint(&buf, &mut cursor)?, expected);
+        }
+        assert_eq!(cursor, buf.len());
+        Ok(())
+    }
+
+    #[test]
+    fn test_zigzag_stream_roundtrip() -> Result<(), crate::EdirstatError> {
+        let values = [0i64, -1, 1, -86400, 86400, i64::MIN, i64::MAX];
+        let mut buf = Vec::new();
+        for &value in &values {
+            write_i64_zigzag(&mut buf, value);
+        }
+        let mut cursor = 0;
+        for &expected in &values {
+            assert_eq!(read_i64_zigzag(&buf, &mut cursor)?, expected);
+        }
+        assert_eq!(cursor, buf.len());
+        Ok(())
+    }
+
+    #[test]
+    fn test_u8_slice_to_u32_vec() {
+        assert!(u8_slice_to_u32_vec(&[]).is_empty());
+
+        // bytemuck cast => native-endian interpretation of each 4-byte group.
+        let bytes: [u8; 8] = [0x01, 0x02, 0x03, 0x04, 0xAA, 0xBB, 0xCC, 0xDD];
+        let words = u8_slice_to_u32_vec(&bytes);
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0], u32::from_ne_bytes([0x01, 0x02, 0x03, 0x04]));
+        assert_eq!(words[1], u32::from_ne_bytes([0xAA, 0xBB, 0xCC, 0xDD]));
+    }
+}

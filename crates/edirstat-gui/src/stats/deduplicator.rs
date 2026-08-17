@@ -1054,4 +1054,181 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
         Ok(())
     }
+
+    #[test]
+    fn test_is_excluded_path_edge_cases() {
+        // "." and ".." segments are not treated as hidden
+        assert!(!is_excluded_path("/a/./b", false, true));
+        assert!(!is_excluded_path("/a/../b", false, true));
+        // Backslash-separated hidden segment
+        assert!(is_excluded_path("C:\\data\\.secret\\f.txt", false, true));
+        // swapfile / pagefile.sys are system files
+        assert!(is_excluded_path("/data/swapfile", true, false));
+        assert!(is_excluded_path("C:\\pagefile.sys", true, false));
+        // System patterns match case-insensitively
+        assert!(is_excluded_path("C:\\$Recycle.Bin\\x", true, false));
+        // A clean path is excluded by neither rule
+        assert!(!is_excluded_path(
+            "/home/tux/Documents/notes.txt",
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn test_rebuild_flat_rows_tie_breaking_and_fallback() {
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"/");
+        let f1_id = pool.get_or_insert(b"medium.txt");
+        let f2_id = pool.get_or_insert(b"longer.txt");
+        let f3_id = pool.get_or_insert(b"s.txt");
+
+        // All three share modified=100; nodes 2 and 3 also share created=5,
+        // so node 3's shorter name breaks that tie.
+        let nodes = vec![
+            FileNode::new(r_id, None, true, false, 0, 0),
+            FileNode::new(f1_id, Some(0), false, false, 100, 10),
+            FileNode::new(f2_id, Some(0), false, false, 100, 5),
+            FileNode::new(f3_id, Some(0), false, false, 100, 5),
+        ];
+
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(vec![]),
+        };
+
+        // file_ids shorter than nodes -> falls back to all-(0,0) ids.
+        let mut results = DeduplicationResults {
+            groups: vec![DuplicateGroup {
+                size: 1000,
+                nodes: vec![1, 2, 3],
+                file_ids: vec![],
+            }],
+            flat_rows: vec![],
+        };
+
+        results.rebuild_flat_rows(&snapshot);
+        assert_eq!(results.flat_rows.len(), 3);
+
+        // Ascending by (modified, created, name length): node order 3, 2, 1.
+        assert_eq!(results.flat_rows[0].node_idx, 3);
+        assert!(results.flat_rows[0].is_original);
+        assert_eq!(results.flat_rows[1].node_idx, 2);
+        assert!(!results.flat_rows[1].is_original);
+        assert_eq!(results.flat_rows[2].node_idx, 1);
+        assert!(!results.flat_rows[2].is_original);
+
+        // The (0,0) fallback ids mean no node is a hardlink.
+        assert!(results.flat_rows.iter().all(|row| !row.is_hardlink));
+    }
+
+    #[test]
+    fn test_deduplication_groups_identical_files() -> Result<(), crate::EdirstatError> {
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_deduplicator_groups");
+        let _ = std::fs::remove_dir_all(&temp_dir); // Clean old
+        std::fs::create_dir_all(temp_dir.join("sub1"))?;
+        std::fs::create_dir_all(temp_dir.join("sub2"))?;
+
+        // Two identical files in different subdirs, a unique-content file of
+        // the same size, and a file below min_size.
+        let dup_content = vec![0xAB_u8; 2048];
+        let unique_content = vec![0xCD_u8; 2048];
+        std::fs::write(temp_dir.join("sub1/dup_a.bin"), &dup_content)?;
+        std::fs::write(temp_dir.join("sub2/dup_b.bin"), &dup_content)?;
+        std::fs::write(temp_dir.join("sub1/unique.bin"), &unique_content)?;
+        std::fs::write(temp_dir.join("sub2/small.bin"), b"tiny")?;
+
+        let shared_state = Arc::new(SharedState::new());
+        shared_state.store_snapshot(dir_snapshot(
+            &temp_dir,
+            &[
+                ("sub1/dup_a.bin", 2048),
+                ("sub2/dup_b.bin", 2048),
+                ("sub1/unique.bin", 2048),
+                ("sub2/small.bin", 4),
+            ],
+        ));
+        let snapshot = shared_state.current_snapshot.load();
+
+        let results = Arc::new(RwLock::new(DeduplicationResults::default()));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let progress = atomic_progress::Progress::new_spinner("Deduplicator");
+        let config = DeduplicatorConfig {
+            min_size: 1024,
+            ignore_system: false,
+            ignore_hidden: false,
+        };
+
+        run_deduplication(snapshot.clone(), progress, results.clone(), cancel, config);
+
+        let results_guard = results.read();
+        assert_eq!(results_guard.groups.len(), 1);
+        let mut group_nodes = results_guard.groups[0].nodes.clone();
+        drop(results_guard);
+        group_nodes.sort_unstable();
+        // Exactly the two identical files (node indices 1 and 2) are grouped;
+        // the unique and below-min_size files appear in no group.
+        assert_eq!(group_nodes, vec![1, 2]);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_deduplication_detects_post_snapshot_modification() -> Result<(), crate::EdirstatError> {
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_deduplicator_mtime");
+        let _ = std::fs::remove_dir_all(&temp_dir); // Clean old
+        std::fs::create_dir_all(&temp_dir)?;
+
+        let file1_path = temp_dir.join("same_a.txt");
+        let file2_path = temp_dir.join("same_b.txt");
+
+        let content = vec![0x42_u8; 2048];
+        std::fs::write(&file1_path, &content)?;
+        std::fs::write(&file2_path, &content)?;
+
+        let size = content.len() as u64;
+        let shared_state = Arc::new(SharedState::new());
+        shared_state.store_snapshot(dir_snapshot(
+            &temp_dir,
+            &[("same_a.txt", size), ("same_b.txt", size)],
+        ));
+        let snapshot = shared_state.current_snapshot.load();
+
+        // Change one file's mtime after the snapshot recorded it, so the
+        // timestamp validation in the hashing phases drops it as stale.
+        let new_mtime = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&file1_path)?
+            .set_modified(new_mtime)?;
+
+        let results = Arc::new(RwLock::new(DeduplicationResults::default()));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let progress = atomic_progress::Progress::new_spinner("Deduplicator");
+        let config = DeduplicatorConfig {
+            min_size: 1024,
+            ignore_system: false,
+            ignore_hidden: false,
+        };
+
+        run_deduplication(snapshot.clone(), progress, results.clone(), cancel, config);
+
+        let results_guard = results.read();
+        let groups_is_empty = results_guard.groups.is_empty();
+        drop(results_guard);
+
+        // The stale file is dropped, leaving no duplicate pair behind.
+        assert!(groups_is_empty);
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
 }

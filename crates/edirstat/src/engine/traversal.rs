@@ -468,7 +468,26 @@ fn get_device_id(_meta: &fs::Metadata) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arena::{FileArenaSnapshot, NO_EXTENSION};
     use crate::coordinator::{Coordinator, SharedState};
+
+    fn node_index(snapshot: &FileArenaSnapshot, name: &str) -> Option<usize> {
+        snapshot
+            .nodes
+            .iter()
+            .position(|n| snapshot.string_pool.get(n.name_id) == Some(name))
+    }
+
+    // A single worker keeps these scans deterministic: with several workers, an
+    // idle worker can observe `busy_workers == 0 && injector.is_empty()` in the
+    // window between a subdirectory task being queued and another worker picking
+    // it up, terminating the scan before deep trees are fully traversed.
+    fn single_threaded_engine(stats: TraversalStats) -> TraversalEngine {
+        TraversalEngine {
+            num_threads: 1,
+            stats,
+        }
+    }
 
     #[test]
     fn test_traversal_and_coordinator() -> Result<(), crate::EdirstatError> {
@@ -631,6 +650,416 @@ mod tests {
         assert_eq!(stats.files_scanned.load(Ordering::SeqCst), 1);
         assert_eq!(stats.dirs_scanned.load(Ordering::SeqCst), 2); // temp_dir and subdir
         assert_eq!(stats.bytes_scanned.load(Ordering::SeqCst), 50);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_traversal_empty_directory() -> Result<(), crate::EdirstatError> {
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_traversal_empty");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir)?;
+
+        let shared_state = Arc::new(SharedState::new());
+        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let handle = engine.start_traversal(
+            temp_dir.clone(),
+            false,
+            shared_state.scan_cancel.clone(),
+            tx,
+        )?;
+        let mut coordinator = Coordinator::new(rx, shared_state.clone());
+        coordinator.run_coordinator_loop(&temp_dir.to_string_lossy());
+        let _ = handle.join();
+
+        let stats = engine.stats();
+        assert_eq!(stats.dirs_scanned.load(Ordering::SeqCst), 1);
+        assert_eq!(stats.files_scanned.load(Ordering::SeqCst), 0);
+        assert_eq!(stats.bytes_scanned.load(Ordering::SeqCst), 0);
+
+        let snapshot = shared_state.current_snapshot.load();
+        assert_eq!(snapshot.nodes.len(), 1);
+        let root = &snapshot.nodes[0];
+        assert!(root.is_directory());
+        assert_eq!(root.size, 0);
+        assert_eq!(root.file_count, 0);
+        assert!(shared_state.extension_stats.load().is_empty());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_traversal_nested_size_propagation() -> Result<(), crate::EdirstatError> {
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_traversal_nested_sizes");
+        let subdir = temp_dir.join("sub");
+        let deepdir = subdir.join("deep");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&deepdir)?;
+
+        std::fs::write(temp_dir.join("a.txt"), vec![0u8; 100])?;
+        std::fs::write(subdir.join("b.txt"), vec![0u8; 200])?;
+        std::fs::write(deepdir.join("c.txt"), vec![0u8; 50])?;
+
+        let shared_state = Arc::new(SharedState::new());
+        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let handle = engine.start_traversal(
+            temp_dir.clone(),
+            false,
+            shared_state.scan_cancel.clone(),
+            tx,
+        )?;
+        let mut coordinator = Coordinator::new(rx, shared_state.clone());
+        coordinator.run_coordinator_loop(&temp_dir.to_string_lossy());
+        let _ = handle.join();
+
+        let snapshot = shared_state.current_snapshot.load();
+        assert_eq!(snapshot.nodes.len(), 6);
+        // Sizes propagate bottom-up into every ancestor directory
+        assert_eq!(snapshot.nodes[0].size, 350);
+        assert_eq!(
+            node_index(&snapshot, "sub").map(|i| snapshot.nodes[i].size),
+            Some(250)
+        );
+        assert_eq!(
+            node_index(&snapshot, "deep").map(|i| snapshot.nodes[i].size),
+            Some(50)
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_traversal_file_count_and_dir_counts() -> Result<(), crate::EdirstatError> {
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_traversal_counts");
+        let subdir = temp_dir.join("sub");
+        let deepdir = subdir.join("deep");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&deepdir)?;
+
+        std::fs::write(temp_dir.join("a.txt"), vec![0u8; 100])?;
+        std::fs::write(subdir.join("b.txt"), vec![0u8; 200])?;
+        std::fs::write(deepdir.join("c.txt"), vec![0u8; 50])?;
+
+        let shared_state = Arc::new(SharedState::new());
+        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let handle = engine.start_traversal(
+            temp_dir.clone(),
+            false,
+            shared_state.scan_cancel.clone(),
+            tx,
+        )?;
+        let mut coordinator = Coordinator::new(rx, shared_state.clone());
+        coordinator.run_coordinator_loop(&temp_dir.to_string_lossy());
+        let _ = handle.join();
+
+        let snapshot = shared_state.current_snapshot.load();
+        assert_eq!(snapshot.nodes.len(), 6);
+        // file_count counts files recursively, directories excluded
+        assert_eq!(snapshot.nodes[0].file_count, 3);
+        assert_eq!(
+            node_index(&snapshot, "sub").map(|i| snapshot.nodes[i].file_count),
+            Some(2)
+        );
+        assert_eq!(
+            node_index(&snapshot, "deep").map(|i| snapshot.nodes[i].file_count),
+            Some(1)
+        );
+        // dir_counts counts subdirectories recursively
+        assert_eq!(snapshot.dir_counts[0], 2);
+        assert_eq!(
+            node_index(&snapshot, "sub").map(|i| snapshot.dir_counts[i]),
+            Some(1)
+        );
+        assert_eq!(
+            node_index(&snapshot, "deep").map(|i| snapshot.dir_counts[i]),
+            Some(0)
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_traversal_symlinks_not_followed() -> Result<(), crate::EdirstatError> {
+        let base_dir = std::env::current_dir()?.join("target");
+        let temp_dir = base_dir.join("test_traversal_symlinks");
+        let outside_target = base_dir.join("test_traversal_symlinks_target");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_dir_all(&outside_target);
+        std::fs::create_dir_all(&temp_dir)?;
+        std::fs::create_dir_all(&outside_target)?;
+
+        // A directory outside the scanned tree, only reachable through a symlink
+        std::fs::write(outside_target.join("secret.txt"), vec![0u8; 40])?;
+        std::fs::write(temp_dir.join("real_file.txt"), vec![0u8; 10])?;
+        std::os::unix::fs::symlink(&outside_target, temp_dir.join("dir_link"))?;
+        std::os::unix::fs::symlink(temp_dir.join("real_file.txt"), temp_dir.join("file_link"))?;
+
+        let shared_state = Arc::new(SharedState::new());
+        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let handle = engine.start_traversal(
+            temp_dir.clone(),
+            false,
+            shared_state.scan_cancel.clone(),
+            tx,
+        )?;
+        let mut coordinator = Coordinator::new(rx, shared_state.clone());
+        coordinator.run_coordinator_loop(&temp_dir.to_string_lossy());
+        let _ = handle.join();
+
+        let snapshot = shared_state.current_snapshot.load();
+        // root + real_file.txt + dir_link + file_link; nothing through the links
+        assert_eq!(snapshot.nodes.len(), 4);
+        assert!(node_index(&snapshot, "dir_link").is_some_and(|i| {
+            let node = &snapshot.nodes[i];
+            node.is_symlink() && !node.is_directory() && node.first_child_opt().is_none()
+        }));
+        assert!(node_index(&snapshot, "file_link").is_some_and(|i| {
+            let node = &snapshot.nodes[i];
+            node.is_symlink() && !node.is_directory()
+        }));
+        assert!(node_index(&snapshot, "real_file.txt").is_some());
+        // The symlinked directory's contents must not appear in the snapshot
+        assert!(node_index(&snapshot, "secret.txt").is_none());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_dir_all(&outside_target);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_traversal_symlink_cycle_terminates() -> Result<(), crate::EdirstatError> {
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_traversal_symlink_cycle");
+        let loop_dir = temp_dir.join("loop");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&loop_dir)?;
+
+        std::fs::write(loop_dir.join("f.txt"), vec![0u8; 10])?;
+        // Symlink back to the scan root: a traversal cycle if it were followed
+        std::os::unix::fs::symlink(&temp_dir, loop_dir.join("up"))?;
+
+        let shared_state = Arc::new(SharedState::new());
+        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let handle = engine.start_traversal(
+            temp_dir.clone(),
+            false,
+            shared_state.scan_cancel.clone(),
+            tx,
+        )?;
+        let mut coordinator = Coordinator::new(rx, shared_state.clone());
+        coordinator.run_coordinator_loop(&temp_dir.to_string_lossy());
+        let _ = handle.join();
+
+        // Completing at all proves termination; the tree stays minimal
+        let snapshot = shared_state.current_snapshot.load();
+        assert_eq!(snapshot.nodes.len(), 4);
+        assert!(node_index(&snapshot, "loop").is_some_and(|i| snapshot.nodes[i].is_directory()));
+        assert!(node_index(&snapshot, "up").is_some_and(|i| snapshot.nodes[i].is_symlink()));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_traversal_hidden_files_included() -> Result<(), crate::EdirstatError> {
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_traversal_hidden");
+        let hidden_dir = temp_dir.join(".hiddendir");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&hidden_dir)?;
+
+        std::fs::write(temp_dir.join(".hidden"), vec![0u8; 60])?;
+        std::fs::write(hidden_dir.join("inner.txt"), vec![0u8; 40])?;
+
+        let shared_state = Arc::new(SharedState::new());
+        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let handle = engine.start_traversal(
+            temp_dir.clone(),
+            false,
+            shared_state.scan_cancel.clone(),
+            tx,
+        )?;
+        let mut coordinator = Coordinator::new(rx, shared_state.clone());
+        coordinator.run_coordinator_loop(&temp_dir.to_string_lossy());
+        let _ = handle.join();
+
+        // The engine has no hidden-file filtering: everything contributes size
+        let snapshot = shared_state.current_snapshot.load();
+        assert_eq!(snapshot.nodes[0].size, 100);
+        assert!(node_index(&snapshot, ".hidden").is_some());
+        assert!(node_index(&snapshot, ".hiddendir").is_some());
+        assert!(node_index(&snapshot, "inner.txt").is_some());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_traversal_extension_stats_aggregation() -> Result<(), crate::EdirstatError> {
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_traversal_ext_stats");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir)?;
+
+        std::fs::write(temp_dir.join("a.txt"), vec![0u8; 10])?;
+        std::fs::write(temp_dir.join("b.txt"), vec![0u8; 20])?;
+        std::fs::write(temp_dir.join("c.rs"), vec![0u8; 5])?;
+        std::fs::write(temp_dir.join("d.rs"), vec![0u8; 7])?;
+
+        let shared_state = Arc::new(SharedState::new());
+        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let handle = engine.start_traversal(
+            temp_dir.clone(),
+            false,
+            shared_state.scan_cancel.clone(),
+            tx,
+        )?;
+        let mut coordinator = Coordinator::new(rx, shared_state.clone());
+        coordinator.run_coordinator_loop(&temp_dir.to_string_lossy());
+        let _ = handle.join();
+
+        // (ext, total_size, file_count) sorted descending by total size
+        let stats = shared_state.extension_stats.load();
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].0.as_str(), "txt");
+        assert_eq!(stats[0].1, 30);
+        assert_eq!(stats[0].2, 2);
+        assert_eq!(stats[1].0.as_str(), "rs");
+        assert_eq!(stats[1].1, 12);
+        assert_eq!(stats[1].2, 2);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_traversal_no_extension_bucket() -> Result<(), crate::EdirstatError> {
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_traversal_no_extension");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir)?;
+
+        // No dot, trailing dot, and leading dot only all count as no-extension
+        std::fs::write(temp_dir.join("Makefile"), vec![0u8; 100])?;
+        std::fs::write(temp_dir.join("LICENSE"), vec![0u8; 50])?;
+        std::fs::write(temp_dir.join("foo."), vec![0u8; 10])?;
+        std::fs::write(temp_dir.join(".gitignore"), vec![0u8; 5])?;
+
+        let shared_state = Arc::new(SharedState::new());
+        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let handle = engine.start_traversal(
+            temp_dir.clone(),
+            false,
+            shared_state.scan_cancel.clone(),
+            tx,
+        )?;
+        let mut coordinator = Coordinator::new(rx, shared_state.clone());
+        coordinator.run_coordinator_loop(&temp_dir.to_string_lossy());
+        let _ = handle.join();
+
+        let stats = shared_state.extension_stats.load();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].0.as_str(), NO_EXTENSION);
+        assert_eq!(stats[0].1, 165);
+        assert_eq!(stats[0].2, 4);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_traversal_unicode_names() -> Result<(), crate::EdirstatError> {
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_traversal_unicode");
+        let unicode_dir = temp_dir.join("日本語");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&unicode_dir)?;
+
+        std::fs::write(temp_dir.join("héllo wörld-✓.txt"), vec![0u8; 10])?;
+        std::fs::write(unicode_dir.join("内部.txt"), vec![0u8; 20])?;
+
+        let shared_state = Arc::new(SharedState::new());
+        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let handle = engine.start_traversal(
+            temp_dir.clone(),
+            false,
+            shared_state.scan_cancel.clone(),
+            tx,
+        )?;
+        let mut coordinator = Coordinator::new(rx, shared_state.clone());
+        coordinator.run_coordinator_loop(&temp_dir.to_string_lossy());
+        let _ = handle.join();
+
+        let snapshot = shared_state.current_snapshot.load();
+        assert_eq!(snapshot.nodes[0].size, 30);
+        assert!(node_index(&snapshot, "héllo wörld-✓.txt").is_some());
+        assert!(node_index(&snapshot, "日本語").is_some());
+        assert!(node_index(&snapshot, "内部.txt").is_some());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_traversal_deep_nesting_terminates() -> Result<(), crate::EdirstatError> {
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_traversal_deep_nesting");
+        let mut deepest = temp_dir.clone();
+        for depth in 0..64 {
+            deepest = deepest.join(format!("d{depth}"));
+        }
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&deepest)?;
+        std::fs::write(deepest.join("bottom.txt"), vec![0u8; 25])?;
+
+        let shared_state = Arc::new(SharedState::new());
+        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let (tx, rx) = crossbeam::channel::unbounded();
+        let handle = engine.start_traversal(
+            temp_dir.clone(),
+            false,
+            shared_state.scan_cancel.clone(),
+            tx,
+        )?;
+        let mut coordinator = Coordinator::new(rx, shared_state.clone());
+        coordinator.run_coordinator_loop(&temp_dir.to_string_lossy());
+        let _ = handle.join();
+
+        let stats = engine.stats();
+        assert_eq!(stats.files_scanned.load(Ordering::SeqCst), 1);
+        assert_eq!(stats.dirs_scanned.load(Ordering::SeqCst), 65); // root + 64 nested dirs
+
+        let snapshot = shared_state.current_snapshot.load();
+        assert_eq!(snapshot.nodes[0].file_count, 1);
+        assert_eq!(snapshot.nodes[0].size, 25);
+        assert_eq!(snapshot.dir_counts[0], 64);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
         Ok(())
