@@ -163,7 +163,14 @@ impl TraversalEngine {
             }
 
             let stealers = Arc::new(stealers);
-            let busy_workers = Arc::new(AtomicUsize::new(0));
+            // In-flight task count: tasks queued anywhere plus tasks currently
+            // being scanned. Incremented when a task is queued (the root task
+            // here, subdirectories inside `scan_directory`), decremented only
+            // after a task's scan completes. New tasks are created exclusively
+            // by in-progress scans, so a zero count means no work remains
+            // anywhere and no more can ever appear. Counting busy workers
+            // instead would miss tasks sitting unpicked in local queues.
+            let in_flight_tasks = Arc::new(AtomicUsize::new(1)); // the root task
             let done = Arc::new(AtomicBool::new(false));
 
             let mut thread_handles = Vec::with_capacity(num_threads);
@@ -172,7 +179,7 @@ impl TraversalEngine {
                 let local_worker = workers.remove(0);
                 let stealers = stealers.clone();
                 let injector = injector.clone();
-                let busy_workers = busy_workers.clone();
+                let in_flight_tasks = in_flight_tasks.clone();
                 let done = done.clone();
                 let event_tx = event_tx.clone();
                 let scan_cancel = scan_cancel.clone();
@@ -186,6 +193,7 @@ impl TraversalEngine {
                         &local_worker,
                         &stats,
                         &scan_cancel,
+                        &in_flight_tasks,
                     );
 
                     loop {
@@ -224,18 +232,16 @@ impl TraversalEngine {
                         });
 
                         if let Some(task) = task_opt {
-                            // Increment active busy counter
-                            busy_workers.fetch_add(1, Ordering::SeqCst);
-
-                            // Process the directory scan task
+                            // Process the directory scan task; its in-flight
+                            // count is released only once the scan completes.
                             scan_directory(&task, &mut ctx);
-
-                            // Decrement active busy counter
-                            busy_workers.fetch_sub(1, Ordering::SeqCst);
+                            in_flight_tasks.fetch_sub(1, Ordering::SeqCst);
                         } else {
                             // No tasks available. Check termination condition.
-                            // If all queues are empty and busy_workers is 0, we're done!
-                            if busy_workers.load(Ordering::SeqCst) == 0 && injector.is_empty() {
+                            // A zero in-flight count is stable: no task is
+                            // queued anywhere, no scan is in progress, and only
+                            // in-progress scans can create new tasks.
+                            if in_flight_tasks.load(Ordering::SeqCst) == 0 {
                                 done.store(true, Ordering::SeqCst);
                             }
 
@@ -271,6 +277,7 @@ struct WorkerContext<'a> {
     local_worker: &'a Worker<ScanTask>,
     stats: &'a TraversalStats,
     scan_cancel: &'a Arc<AtomicBool>,
+    in_flight_tasks: &'a AtomicUsize,
 }
 
 impl<'a> WorkerContext<'a> {
@@ -280,6 +287,7 @@ impl<'a> WorkerContext<'a> {
         local_worker: &'a Worker<ScanTask>,
         stats: &'a TraversalStats,
         scan_cancel: &'a Arc<AtomicBool>,
+        in_flight_tasks: &'a AtomicUsize,
     ) -> Self {
         Self {
             worker_id,
@@ -289,6 +297,7 @@ impl<'a> WorkerContext<'a> {
             local_worker,
             stats,
             scan_cancel,
+            in_flight_tasks,
         }
     }
 
@@ -407,6 +416,10 @@ fn scan_directory(task: &ScanTask, ctx: &mut WorkerContext<'_>) {
                 expected_device_id: task.expected_device_id,
             };
             ctx.local_worker.push(new_task);
+            // Keep the in-flight count nonzero for as long as queued work
+            // exists; this scan's own count is released after it returns, so
+            // the increment always precedes that decrement.
+            ctx.in_flight_tasks.fetch_add(1, Ordering::SeqCst);
         } else {
             // It's a file
             ctx.stats.files_scanned.fetch_add(1, Ordering::Relaxed);
@@ -476,17 +489,6 @@ mod tests {
             .nodes
             .iter()
             .position(|n| snapshot.string_pool.get(n.name_id) == Some(name))
-    }
-
-    // A single worker keeps these scans deterministic: with several workers, an
-    // idle worker can observe `busy_workers == 0 && injector.is_empty()` in the
-    // window between a subdirectory task being queued and another worker picking
-    // it up, terminating the scan before deep trees are fully traversed.
-    fn single_threaded_engine(stats: TraversalStats) -> TraversalEngine {
-        TraversalEngine {
-            num_threads: 1,
-            stats,
-        }
     }
 
     #[test]
@@ -664,7 +666,7 @@ mod tests {
         std::fs::create_dir_all(&temp_dir)?;
 
         let shared_state = Arc::new(SharedState::new());
-        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let engine = TraversalEngine::new(shared_state.scan_stats.clone());
         let (tx, rx) = crossbeam::channel::unbounded();
         let handle = engine.start_traversal(
             temp_dir.clone(),
@@ -708,7 +710,7 @@ mod tests {
         std::fs::write(deepdir.join("c.txt"), vec![0u8; 50])?;
 
         let shared_state = Arc::new(SharedState::new());
-        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let engine = TraversalEngine::new(shared_state.scan_stats.clone());
         let (tx, rx) = crossbeam::channel::unbounded();
         let handle = engine.start_traversal(
             temp_dir.clone(),
@@ -752,7 +754,7 @@ mod tests {
         std::fs::write(deepdir.join("c.txt"), vec![0u8; 50])?;
 
         let shared_state = Arc::new(SharedState::new());
-        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let engine = TraversalEngine::new(shared_state.scan_stats.clone());
         let (tx, rx) = crossbeam::channel::unbounded();
         let handle = engine.start_traversal(
             temp_dir.clone(),
@@ -809,7 +811,7 @@ mod tests {
         std::os::unix::fs::symlink(temp_dir.join("real_file.txt"), temp_dir.join("file_link"))?;
 
         let shared_state = Arc::new(SharedState::new());
-        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let engine = TraversalEngine::new(shared_state.scan_stats.clone());
         let (tx, rx) = crossbeam::channel::unbounded();
         let handle = engine.start_traversal(
             temp_dir.clone(),
@@ -856,7 +858,7 @@ mod tests {
         std::os::unix::fs::symlink(&temp_dir, loop_dir.join("up"))?;
 
         let shared_state = Arc::new(SharedState::new());
-        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let engine = TraversalEngine::new(shared_state.scan_stats.clone());
         let (tx, rx) = crossbeam::channel::unbounded();
         let handle = engine.start_traversal(
             temp_dir.clone(),
@@ -891,7 +893,7 @@ mod tests {
         std::fs::write(hidden_dir.join("inner.txt"), vec![0u8; 40])?;
 
         let shared_state = Arc::new(SharedState::new());
-        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let engine = TraversalEngine::new(shared_state.scan_stats.clone());
         let (tx, rx) = crossbeam::channel::unbounded();
         let handle = engine.start_traversal(
             temp_dir.clone(),
@@ -928,7 +930,7 @@ mod tests {
         std::fs::write(temp_dir.join("d.rs"), vec![0u8; 7])?;
 
         let shared_state = Arc::new(SharedState::new());
-        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let engine = TraversalEngine::new(shared_state.scan_stats.clone());
         let (tx, rx) = crossbeam::channel::unbounded();
         let handle = engine.start_traversal(
             temp_dir.clone(),
@@ -969,7 +971,7 @@ mod tests {
         std::fs::write(temp_dir.join(".gitignore"), vec![0u8; 5])?;
 
         let shared_state = Arc::new(SharedState::new());
-        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let engine = TraversalEngine::new(shared_state.scan_stats.clone());
         let (tx, rx) = crossbeam::channel::unbounded();
         let handle = engine.start_traversal(
             temp_dir.clone(),
@@ -1004,7 +1006,7 @@ mod tests {
         std::fs::write(unicode_dir.join("内部.txt"), vec![0u8; 20])?;
 
         let shared_state = Arc::new(SharedState::new());
-        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let engine = TraversalEngine::new(shared_state.scan_stats.clone());
         let (tx, rx) = crossbeam::channel::unbounded();
         let handle = engine.start_traversal(
             temp_dir.clone(),
@@ -1040,7 +1042,7 @@ mod tests {
         std::fs::write(deepest.join("bottom.txt"), vec![0u8; 25])?;
 
         let shared_state = Arc::new(SharedState::new());
-        let engine = single_threaded_engine(shared_state.scan_stats.clone());
+        let engine = TraversalEngine::new(shared_state.scan_stats.clone());
         let (tx, rx) = crossbeam::channel::unbounded();
         let handle = engine.start_traversal(
             temp_dir.clone(),
@@ -1060,6 +1062,120 @@ mod tests {
         assert_eq!(snapshot.nodes[0].file_count, 1);
         assert_eq!(snapshot.nodes[0].size, 25);
         assert_eq!(snapshot.dir_counts[0], 64);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_traversal_deep_nesting_multithreaded_termination() -> Result<(), crate::EdirstatError> {
+        // Regression test for a work-stealing termination race: an idle worker
+        // could observe a "no work left" state in the window between a
+        // subdirectory task being queued to a local worker queue and that task
+        // being picked up, terminating the scan early. A serial 64-deep chain
+        // forces one task handoff per level — the maximal exposure case.
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_traversal_deep_nesting_stress");
+        let mut deepest = temp_dir.clone();
+        for depth in 0..64 {
+            deepest = deepest.join(format!("d{depth}"));
+        }
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&deepest)?;
+        std::fs::write(deepest.join("bottom.txt"), vec![0u8; 25])?;
+
+        for iteration in 0..25 {
+            let shared_state = Arc::new(SharedState::new());
+            let engine = TraversalEngine {
+                num_threads: 32,
+                stats: shared_state.scan_stats.clone(),
+            };
+            let (tx, rx) = crossbeam::channel::unbounded();
+            let handle = engine.start_traversal(
+                temp_dir.clone(),
+                false,
+                shared_state.scan_cancel.clone(),
+                tx,
+            )?;
+            let mut coordinator = Coordinator::new(rx, shared_state.clone());
+            coordinator.run_coordinator_loop(&temp_dir.to_string_lossy());
+            let _ = handle.join();
+
+            let stats = engine.stats();
+            assert_eq!(
+                stats.dirs_scanned.load(Ordering::SeqCst),
+                65,
+                "iteration {iteration}: scan truncated early (termination race)"
+            );
+            assert_eq!(
+                stats.files_scanned.load(Ordering::SeqCst),
+                1,
+                "iteration {iteration}: bottom file missed"
+            );
+            let snapshot = shared_state.current_snapshot.load();
+            assert_eq!(snapshot.nodes.len(), 66, "iteration {iteration}");
+            assert_eq!(snapshot.nodes[0].size, 25, "iteration {iteration}");
+            assert_eq!(snapshot.nodes[0].file_count, 1, "iteration {iteration}");
+            assert_eq!(snapshot.dir_counts[0], 64, "iteration {iteration}");
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_traversal_wide_tree_multithreaded_termination() -> Result<(), crate::EdirstatError> {
+        // Same termination-race coverage with work spread across every queue:
+        // 32 independent 8-deep chains so tasks constantly migrate between the
+        // injector and local worker queues while other workers sit idle.
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_traversal_wide_stress");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        for chain in 0..32 {
+            let mut dir = temp_dir.join(format!("chain{chain}"));
+            for depth in 0..8 {
+                dir = dir.join(format!("d{depth}"));
+            }
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join("leaf.txt"), vec![0u8; 7])?;
+        }
+
+        for iteration in 0..10 {
+            let shared_state = Arc::new(SharedState::new());
+            let engine = TraversalEngine {
+                num_threads: 32,
+                stats: shared_state.scan_stats.clone(),
+            };
+            let (tx, rx) = crossbeam::channel::unbounded();
+            let handle = engine.start_traversal(
+                temp_dir.clone(),
+                false,
+                shared_state.scan_cancel.clone(),
+                tx,
+            )?;
+            let mut coordinator = Coordinator::new(rx, shared_state.clone());
+            coordinator.run_coordinator_loop(&temp_dir.to_string_lossy());
+            let _ = handle.join();
+
+            let stats = engine.stats();
+            // root + 32 chain dirs + 32*8 nested dirs
+            assert_eq!(
+                stats.dirs_scanned.load(Ordering::SeqCst),
+                289,
+                "iteration {iteration}: scan truncated early (termination race)"
+            );
+            assert_eq!(
+                stats.files_scanned.load(Ordering::SeqCst),
+                32,
+                "iteration {iteration}: leaf files missed"
+            );
+            let snapshot = shared_state.current_snapshot.load();
+            assert_eq!(snapshot.nodes[0].size, 32 * 7, "iteration {iteration}");
+            assert_eq!(snapshot.nodes[0].file_count, 32, "iteration {iteration}");
+            assert_eq!(snapshot.dir_counts[0], 288, "iteration {iteration}");
+        }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
         Ok(())
