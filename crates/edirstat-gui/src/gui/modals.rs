@@ -446,6 +446,7 @@ impl GuiApp {
         self.shared_state.store_snapshot(new_snapshot);
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn execute_deletion(
         &mut self,
         target_indices: &[u32],
@@ -524,6 +525,16 @@ impl GuiApp {
         });
     }
 
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn execute_deletion(
+        &mut self,
+        _target_indices: &[u32],
+        _to_trash: bool,
+        _ctx: &egui::Context,
+    ) {
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn execute_hardlinking(&mut self, target_indices: &[u32], ctx: &egui::Context) {
         if target_indices.is_empty() {
             return;
@@ -639,6 +650,10 @@ impl GuiApp {
         });
     }
 
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn execute_hardlinking(&mut self, _target_indices: &[u32], _ctx: &egui::Context) {}
+
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn execute_softlinking(&mut self, target_indices: &[u32], ctx: &egui::Context) {
         if target_indices.is_empty() {
             return;
@@ -752,7 +767,10 @@ impl GuiApp {
         });
     }
 
-    #[cfg(target_family = "unix")]
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn execute_softlinking(&mut self, _target_indices: &[u32], _ctx: &egui::Context) {}
+
+    #[cfg(all(target_family = "unix", not(target_family = "wasm")))]
     fn symlink(src_path: &std::path::Path, dst_path: &std::path::Path) -> std::io::Result<()> {
         std::os::unix::fs::symlink(src_path, dst_path)
     }
@@ -762,7 +780,7 @@ impl GuiApp {
         std::os::windows::fs::symlink_file(src_path, dst_path)
     }
 
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(all(not(any(unix, windows)), not(target_family = "wasm")))]
     fn symlink(_src_path: &std::path::Path, _dst_path: &std::path::Path) -> std::io::Result<()> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -2495,6 +2513,7 @@ impl GuiApp {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn is_permission_denied_io(err: &std::io::Error) -> bool {
     err.kind() == std::io::ErrorKind::PermissionDenied
 }
@@ -2511,6 +2530,7 @@ fn delete_to_trash(path: &std::path::Path) -> Result<(), (String, bool)> {
 /// `(message, is_permission_denied)` form. The trash backend is native-only;
 /// on wasm this path is unreachable (no trash UI) and reports a plain error.
 #[cfg(target_family = "wasm")]
+#[allow(dead_code)]
 fn delete_to_trash(_path: &std::path::Path) -> Result<(), (String, bool)> {
     Err(("trash is not supported in the browser".to_owned(), false))
 }
