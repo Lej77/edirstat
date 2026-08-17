@@ -215,6 +215,9 @@ jobs:
       - name: Cache dependencies
         uses: swatinem/rust-cache@v2
 
+      - name: Install MinGW cross toolchain
+        run: pacman -Syu --noconfirm mingw-w64-gcc
+
       - name: Configure safe directory for Git
         run: git config --global --add safe.directory "*"
 

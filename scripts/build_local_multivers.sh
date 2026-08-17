@@ -16,6 +16,11 @@ CRATE_SUBDIR="runner"
 PROJECT_DIR="$(pwd)"
 WRAPPER_TMP=""
 
+# Pin the toolchain for any cargo invocation outside this repository (the
+# runner wrapper builds in a mktemp dir): rust-toolchain.toml only applies
+# inside the repo, and CI containers may have no rustup default toolchain.
+export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-$(rustup show active-toolchain | cut -d' ' -f1)}"
+
 # Cleanup trap to ensure we don't leave artifacts laying around locally
 trap '[[ -n "${WRAPPER_TMP:-}" ]] && rm -rf "$WRAPPER_TMP"; rm -f "${PROJECT_DIR}/multivers_manifest.json" "${PROJECT_DIR}/builds_absolute.json"' EXIT
 
