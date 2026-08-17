@@ -33,14 +33,14 @@ main() {
 
     # Target-specific markdown files: target:manifest_path:output_file
     local targets=(
-        "x86_64-unknown-linux-gnu:crates/edirstat/Cargo.toml:assets/licenses/linux.md"
-        "x86_64-pc-windows-msvc:crates/edirstat/Cargo.toml:assets/licenses/windows.md"
-        "x86_64-apple-darwin:crates/edirstat/Cargo.toml:assets/licenses/macos.md"
-        "wasm32-unknown-unknown:crates/edirstat-gui/Cargo.toml:assets/licenses/web.md"
+        "x86_64-unknown-linux-gnu:crates/edirstat/Cargo.toml:crates/edirstat-gui/assets/licenses/linux.md"
+        "x86_64-pc-windows-msvc:crates/edirstat/Cargo.toml:crates/edirstat-gui/assets/licenses/windows.md"
+        "x86_64-apple-darwin:crates/edirstat/Cargo.toml:crates/edirstat-gui/assets/licenses/macos.md"
+        "wasm32-unknown-unknown:crates/edirstat-gui/Cargo.toml:crates/edirstat-gui/assets/licenses/web.md"
     )
 
     # Ensure assets/licenses directory exists
-    mkdir -p assets/licenses
+    mkdir -p crates/edirstat-gui/assets/licenses
 
     for entry in "${targets[@]}"; do
         IFS=":" read -r target manifest output_file <<< "$entry"

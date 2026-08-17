@@ -1253,7 +1253,7 @@ impl eframe::App for GuiApp {
                 );
                 ui.add(
                     egui::Image::new(egui::include_image!(
-                        "../../../../assets/img/icon-transparent.png"
+                        "../../assets/img/icon-transparent.png"
                     ))
                     .max_height(24.0),
                 );
@@ -1854,7 +1854,7 @@ impl GuiApp {
             ui.add_space(80.0);
             ui.add(
                 egui::Image::new(egui::include_image!(
-                    "../../../../assets/img/logo-nosubtext-transparent.png"
+                    "../../assets/img/logo-nosubtext-transparent.png"
                 ))
                 .max_height(140.0),
             );

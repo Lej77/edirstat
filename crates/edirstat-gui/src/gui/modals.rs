@@ -1489,7 +1489,7 @@ impl GuiApp {
                             ui.vertical_centered(|ui| {
                                 ui.add(
                                     egui::Image::new(egui::include_image!(
-                                        "../../../../assets/img/logo-nosubtext-transparent.png"
+                                        "../../assets/img/logo-nosubtext-transparent.png"
                                     ))
                                     .max_height(48.0),
                                 );
@@ -1769,30 +1769,26 @@ impl GuiApp {
 
                                 let mut licenses_text = {
                                     #[cfg(target_os = "linux")]
-                                    let bytes = include_packed::include_packed!(
-                                        "../../assets/licenses/linux.md"
-                                    );
+                                    let bytes =
+                                        include_packed::include_packed!("assets/licenses/linux.md");
                                     #[cfg(target_os = "windows")]
                                     let bytes = include_packed::include_packed!(
-                                        "../../assets/licenses/windows.md"
+                                        "assets/licenses/windows.md"
                                     );
                                     #[cfg(target_os = "macos")]
-                                    let bytes = include_packed::include_packed!(
-                                        "../../assets/licenses/macos.md"
-                                    );
+                                    let bytes =
+                                        include_packed::include_packed!("assets/licenses/macos.md");
                                     #[cfg(target_family = "wasm")]
-                                    let bytes = include_packed::include_packed!(
-                                        "../../assets/licenses/web.md"
-                                    );
+                                    let bytes =
+                                        include_packed::include_packed!("assets/licenses/web.md");
                                     #[cfg(not(any(
                                         target_os = "linux",
                                         target_os = "windows",
                                         target_os = "macos",
                                         target_family = "wasm"
                                     )))]
-                                    let bytes = include_packed::include_packed!(
-                                        "../../assets/licenses/linux.md"
-                                    );
+                                    let bytes =
+                                        include_packed::include_packed!("assets/licenses/linux.md");
 
                                     String::from_utf8(bytes).unwrap_or_default()
                                 };
@@ -2840,6 +2836,37 @@ mod tests {
         filter_unc.search.open();
         assert!(!provider.row_matches(&state, 0, &[(0, filter_unc)], None));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_packaged_licenses_blob_loads() -> Result<(), crate::EdirstatError> {
+        // Guards the assets/ relocation into this crate: include_packed! paths
+        // resolve against CARGO_MANIFEST_DIR, so the crate only builds and the
+        // About-modal blob only loads when assets/licenses ships inside
+        // edirstat-gui (required for crates.io packaging).
+        #[cfg(target_os = "linux")]
+        let bytes = include_packed::include_packed!("assets/licenses/linux.md");
+        #[cfg(target_os = "windows")]
+        let bytes = include_packed::include_packed!("assets/licenses/windows.md");
+        #[cfg(target_os = "macos")]
+        let bytes = include_packed::include_packed!("assets/licenses/macos.md");
+        #[cfg(target_family = "wasm")]
+        let bytes = include_packed::include_packed!("assets/licenses/web.md");
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "windows",
+            target_os = "macos",
+            target_family = "wasm"
+        )))]
+        let bytes = include_packed::include_packed!("assets/licenses/linux.md");
+
+        assert!(!bytes.is_empty());
+        let text = String::from_utf8(bytes).map_err(std::io::Error::other)?;
+        assert!(
+            text.contains("MIT"),
+            "license bundle should list the MIT license"
+        );
         Ok(())
     }
 }
