@@ -34,11 +34,13 @@ pub mod deduplicator;
 pub mod explorer;
 pub mod extensions;
 pub mod modals;
+pub mod notifications;
 pub mod operations;
 pub mod theme;
 
 pub use extensions::ExtensionStat;
 pub use modals::ActiveModal;
+pub use notifications::{show_toasts, toast_error, toast_info, toast_success, toast_warning};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisMode {
@@ -2491,47 +2493,6 @@ fn open_terminal_at(path: &Path) -> std::io::Result<()> {
             "Unsupported platform",
         ))
     }
-}
-
-pub static TOASTS: std::sync::LazyLock<parking_lot::Mutex<egui_notify::Toasts>> =
-    std::sync::LazyLock::new(|| {
-        parking_lot::Mutex::new(
-            egui_notify::Toasts::new()
-                .with_anchor(egui_notify::Anchor::BottomRight)
-                .with_margin(egui::vec2(10.0, 30.0)),
-        )
-    });
-
-pub fn toast_success(message: impl Into<egui::WidgetText>) {
-    TOASTS
-        .lock()
-        .success(message)
-        .duration(Some(Duration::from_secs(4)));
-}
-
-pub fn toast_info(message: impl Into<egui::WidgetText>) {
-    TOASTS
-        .lock()
-        .info(message)
-        .duration(Some(Duration::from_secs(4)));
-}
-
-pub fn toast_warning(message: impl Into<egui::WidgetText>) {
-    TOASTS
-        .lock()
-        .warning(message)
-        .duration(Some(Duration::from_secs(8)));
-}
-
-pub fn toast_error(message: impl Into<egui::WidgetText>) {
-    TOASTS
-        .lock()
-        .error(message)
-        .duration(Some(Duration::from_secs(16)));
-}
-
-pub fn show_toasts(ctx: &egui::Context) {
-    TOASTS.lock().show(ctx);
 }
 
 #[cfg(target_family = "wasm")]

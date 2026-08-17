@@ -1320,7 +1320,6 @@ dependencies = [
  "edirstat-core",
  "eframe",
  "egui-async",
- "egui-notify",
  "egui-table-kit",
  "egui_extras",
  "egui_plot",
@@ -1419,14 +1418,6 @@ dependencies = [
  "tokio",
  "tracing",
  "wasm-bindgen-futures",
-]
-
-[[package]]
-name = "egui-notify"
-version = "0.23.0"
-source = "git+https://github.com/UnknownSuperficialNight/egui-notify.git?branch=egui-0.36#ae98ed7cb57a5c1c0127ef878bc9b2233d335983"
-dependencies = [
- "egui",
 ]
 
 [[package]]
