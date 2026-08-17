@@ -68,6 +68,7 @@
 - **⚙️ GitHub Actions Updates:** Unified all CI/CD workflow actions to their latest major versions (`checkout@v7`, `upload-artifact@v7`, `download-artifact@v8`).
 - **🧹 Engine Cleanup:** Refactored the traversal engine's worker context handle and renamed the deduplicator tab module.
 - **🧹 Git Ignore Rules:** `target/` directories are now ignored at any repository depth.
+- **📦 crates.io README:** The `edirstat` crate now renders the repository's root `README.md` on crates.io via the `readme` manifest field, retiring the separate crate-local blurb.
 - **📄 Documentation:** Linked the project website from the README.
 
 ### Fixed
@@ -103,6 +104,11 @@
 - **🍏 macOS Bundle Versioning:** Fixed stale hardcoded version strings in macOS app bundles; `CFBundleShortVersionString` is now generated from `Cargo.toml` in both CI/CD workflows.
 - **🧪 Case-Sensitivity Test Portability:** Fixed the `$MFT` probing tests to detect filesystem case sensitivity at runtime instead of assuming case-sensitive semantics, resolving macOS CI failures.
 - **🔢 Version Sync:** Synchronized version numbers across all manifests.
+
+### 💖 Contributors & Thanks
+
+- **[@Lej77](https://github.com/Lej77)** — for the NTFS `$MFT` fixes and improvements, including Master File Table scanning of NTFS drives on Linux (#14) and support for folding in MFT extension records (#15).
+- **[@AlexanderSchuetz97](https://github.com/AlexanderSchuetz97)** — for the many feature requests, German translation review, and extensive bug testing that helped shape this release.
 
 ---
 

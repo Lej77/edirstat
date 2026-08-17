@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 documentation = "https://docs.rs/edirstat"
+readme = "../../README.md"
 repository.workspace = true
 authors.workspace = true
 categories = [
@@ -22,7 +23,6 @@ include = [
     "/assets/**/*",
     "/build.rs",
     "/LICENSE",
-    "/README.md",
 ]
 
 [features]
