@@ -1,4 +1,4 @@
-/target
+target/
 /workspace
 /web/node_modules
 /web/static
