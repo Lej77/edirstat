@@ -18,7 +18,7 @@ jobs:
       options: --user root # How I wish this were GitLab
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Cache dependencies
         uses: swatinem/rust-cache@v2
@@ -50,7 +50,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@master
@@ -74,7 +74,7 @@ jobs:
 
     steps:
       - name: Checkout Source Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Cache dependencies
         uses: swatinem/rust-cache@v2
@@ -103,7 +103,7 @@ jobs:
 
     steps:
       - name: Checkout Source Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Cache dependencies
         uses: swatinem/rust-cache@v2
@@ -137,7 +137,7 @@ jobs:
 
     steps:
       - name: Checkout Source Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@master
@@ -193,7 +193,7 @@ jobs:
 
     steps:
       - name: Checkout Source Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@master
@@ -290,14 +290,14 @@ jobs:
 
     steps:
       - name: Checkout Source Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install System Dependencies
         run: |
           paru -Syu --noconfirm zola nodejs npm
 
       - name: Download WASM Dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wasm-dist
           path: crates/edirstat-gui/dist
