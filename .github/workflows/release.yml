@@ -253,6 +253,10 @@ jobs:
           sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
           sed -i 's/^pkgrel=.*/pkgrel=1/' PKGBUILD
 
+          # Never emit makepkg's debug split package (default `debug` option);
+          # a multi-file channel upload makes itch.io wrap it as a zip
+          echo "options=('!debug')" >> PKGBUILD
+
           # Automatically resolve checksums for the local binary and download metadata
           updpkgsums
 
@@ -260,9 +264,10 @@ jobs:
           makepkg -s --noconfirm
           EOF
 
-          # 4. Copy the compiled package back to workspace
+          # 4. Copy the compiled package back to workspace (main package only,
+          #    never a debug split package)
           mkdir -p staging-linux-installer
-          cp /home/tux/edirstat-bin/*.pkg.tar.zst staging-linux-installer/
+          cp /home/tux/edirstat-bin/edirstat-bin-"$VERSION"-*-x86_64.pkg.tar.zst staging-linux-installer/
 
       - name: Store Multivers Windows Wrapper
         uses: actions/upload-artifact@v7
@@ -309,19 +314,23 @@ jobs:
           $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.*?)"').Matches.Groups[1].Value
           echo "Detected Cargo Version: $version"
 
-          # 2. Compile passing the version dynamically
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=$version installer.iss
+          # 2. Compile passing the version dynamically, with a versioned filename
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=$version /Fedirstat-$version-setup-x86_64 installer.iss
 
       - name: Store Production Installer as Private Artifact
         uses: actions/upload-artifact@v7
         with:
           name: edirstat-setup-x86_64.exe
-          path: staging\edirstat-setup-x86_64.exe
+          path: staging\edirstat-*-setup-x86_64.exe
 
   deploy-itchio:
     name: Deploy to itch.io
     runs-on: ubuntu-latest
     needs: [combine-multivers, package-windows-installer]
+    # Environment scoping enables an approval gate before pushing to the paid
+    # store, and lets the BUTLER_API_KEY secret be scoped to this deployment
+    # (Settings → Environments → itchio).
+    environment: itchio
     container:
       image: registry.gitlab.com/xangelix-pub/containers/arch-rust-nightly-pin-common:latest
       options: --user root # How I wish this were GitLab
@@ -356,10 +365,13 @@ jobs:
 
       - name: Stage Channels
         run: |
+          # Versioned filenames become the download names shown on itch.io
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
           mkdir -p staging-windows staging-linux
-          cp dl-multivers-windows/edirstat_multivers.exe staging-windows/edirstat.exe
-          cp dl-multivers-linux/edirstat_multivers staging-linux/edirstat
-          chmod +x staging-linux/edirstat
+          cp dl-multivers-windows/edirstat_multivers.exe "staging-windows/edirstat-$VERSION-portable-x86_64.exe"
+          cp dl-multivers-linux/edirstat_multivers "staging-linux/edirstat-$VERSION-portable-x86_64"
+          chmod +x "staging-linux/edirstat-$VERSION-portable-x86_64"
 
       - name: Push to itch.io
         env:
