@@ -58,7 +58,10 @@ for TARGET in $TARGETS; do
 
     # -------------------------------------------------------------------------
     # 2. Build inner binaries (Matrix step equivalent)
+    #    Skipped by combine jobs (MULTIVERS_SKIP_VARIANTS=1), which instead
+    #    reuse variant binaries already present in target/<target>/release/.
     # -------------------------------------------------------------------------
+    if [[ -z "${MULTIVERS_SKIP_VARIANTS:-}" ]]; then
     for CPU in $TARGET_CPUS; do
         echo "-----------------------------------------------------------"
         echo "🔨 Compiling for CPU: $CPU"
@@ -78,6 +81,15 @@ for TARGET in $TARGETS; do
         # Move and append the CPU suffix and correct executable extension
         mv "${OUT_DIR}/${BIN_NAME}${EXE_EXT}" "${OUT_DIR}/${BIN_NAME}-${CPU}${EXE_EXT}"
     done
+    fi
+
+    if [[ -n "${MULTIVERS_SKIP_WRAPPER:-}" ]]; then
+        echo "==========================================================="
+        echo "✅ Success! Variant binaries available in:"
+        echo "   $OUT_DIR"
+        echo "==========================================================="
+        continue
+    fi
 
     # -------------------------------------------------------------------------
     # 3. Generate Manifest
