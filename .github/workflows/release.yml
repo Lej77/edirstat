@@ -50,6 +50,13 @@ jobs:
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
 
+    env:
+      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v7
@@ -65,75 +72,61 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Compile optimized release binary
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Structure App Bundle & Ad-Hoc Sign
+      # A release must never silently ship unsigned: fail loud if the
+      # secrets aren't installed (see AGENTS/release docs for the list).
+      - name: Require signing secrets
         run: |
-          # 1. Create standard macOS App Bundle layout
-          APP_DIR="staging/eDirStat.app"
-          mkdir -p "$APP_DIR/Contents/MacOS"
-          mkdir -p "$APP_DIR/Contents/Resources"
+          if [ -z "$MACOS_CERTIFICATE_P12" ] || [ -z "$APPLE_API_KEY" ]; then
+            echo "::error::macOS release packaging requires MACOS_CERTIFICATE_P12, MACOS_CERTIFICATE_PASSWORD, APPLE_API_KEY, APPLE_API_KEY_ID, APPLE_API_ISSUER secrets."
+            exit 1
+          fi
 
-          # 2. Move compiled binary into position
-          cp target/${{ matrix.target }}/release/edirstat "$APP_DIR/Contents/MacOS/edirstat"
+      - name: Import signing identity & notary credentials
+        run: |
+          set -euo pipefail
+          KEYCHAIN="edirstat-ci.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
 
-          # 3. Automatically compile the .icns asset using standard Apple tooling
-          mkdir -p eDirStat.iconset
-          sips -z 16 16     assets/img/icon_256x.png --out eDirStat.iconset/icon_16x16.png
-          sips -z 32 32     assets/img/icon_256x.png --out eDirStat.iconset/icon_16x16@2x.png
-          sips -z 32 32     assets/img/icon_256x.png --out eDirStat.iconset/icon_32x32.png
-          sips -z 64 64     assets/img/icon_256x.png --out eDirStat.iconset/icon_32x32@2x.png
-          sips -z 128 128   assets/img/icon_256x.png --out eDirStat.iconset/icon_128x128.png
-          sips -z 256 256   assets/img/icon_256x.png --out eDirStat.iconset/icon_128x128@2x.png
-          cp assets/img/icon_256x.png eDirStat.iconset/icon_256x256.png
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
-          iconutil -c icns eDirStat.iconset --output "$APP_DIR/Contents/Resources/icon.icns"
+          umask 077
+          echo "$MACOS_CERTIFICATE_P12" | base64 -d > signing.p12
+          security import signing.p12 -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm signing.p12
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security list-keychains -s "$KEYCHAIN"
 
-          # 4. Generate the Info.plist meta file with icon mapping links
-          VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
-          cat <<EOF > "$APP_DIR/Contents/Info.plist"
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleExecutable</key>
-              <string>edirstat</string>
-              <key>CFBundleIconFile</key>
-              <string>icon.icns</string>
-              <key>CFBundleIdentifier</key>
-              <string>to.cody.edirstat</string>
-              <key>CFBundleName</key>
-              <string>eDirStat</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>CFBundleShortVersionString</key>
-              <string>${VERSION}</string>
-              <key>LSMinimumSystemVersion</key>
-              <string>10.15</string>
-          </dict>
-          </plist>
-          EOF
+          echo "$APPLE_API_KEY" | base64 -d > AuthKey.p8
+          xcrun notarytool store-credentials notary \
+            --key AuthKey.p8 --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER"
+          rm AuthKey.p8
 
-          # 5. Cryptographically sign the bundle locally with sandboxing entitlements
-          codesign --force --options runtime --entitlements entitlements.plist -s - "$APP_DIR"
-
-          # 6. Compress app bundle into a standard .zip archive to protect folder permissions
-          cd staging
-          zip -r "../edirstat-macos-${{ matrix.target }}.zip" eDirStat.app
+      - name: Build, Bundle, Sign & Notarize
+        run: ./scripts/package_macos.sh --target "${{ matrix.target }}"
 
       - name: Store macOS Package as Private Artifact
         uses: actions/upload-artifact@v7
         with:
-          name: edirstat-macos-${{ matrix.target }}.zip
-          path: edirstat-macos-${{ matrix.target }}.zip
+          name: edirstat-macos-${{ matrix.target }}
+          path: edirstat-macos-*.zip
 
       # - name: Upload Asset to GitHub Release
       #   uses: softprops/action-gh-release@v3
       #   with:
-      #     files: edirstat-macos-${{ matrix.target }}.zip
+      #     files: edirstat-macos-*.zip
       #   env:
       #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup keychain
+        if: always()
+        run: security delete-keychain edirstat-ci.keychain-db || true
 
   # One parallel leg per (target, CPU) pair: each builds a single optimized
   # variant binary. combine-multivers merges them into the multivers wrappers.

@@ -186,7 +186,6 @@ jobs:
     name: Build & Package macOS
     runs-on: macos-latest
     needs: [test-linux, test-macos]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     strategy:
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
@@ -206,68 +205,14 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Compile optimized release binary
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Structure App Bundle & Ad-Hoc Sign
-        run: |
-          # 1. Create standard macOS App Bundle layout
-          APP_DIR="staging/eDirStat.app"
-          mkdir -p "$APP_DIR/Contents/MacOS"
-          mkdir -p "$APP_DIR/Contents/Resources"
-
-          # 2. Move compiled binary into position
-          cp target/${{ matrix.target }}/release/edirstat "$APP_DIR/Contents/MacOS/edirstat"
-
-          # 3. Automatically compile the .icns asset using standard Apple tooling
-          mkdir -p eDirStat.iconset
-          sips -z 16 16     assets/img/icon_256x.png --out eDirStat.iconset/icon_16x16.png
-          sips -z 32 32     assets/img/icon_256x.png --out eDirStat.iconset/icon_16x16@2x.png
-          sips -z 32 32     assets/img/icon_256x.png --out eDirStat.iconset/icon_32x32.png
-          sips -z 64 64     assets/img/icon_256x.png --out eDirStat.iconset/icon_32x32@2x.png
-          sips -z 128 128   assets/img/icon_256x.png --out eDirStat.iconset/icon_128x128.png
-          sips -z 256 256   assets/img/icon_256x.png --out eDirStat.iconset/icon_128x128@2x.png
-          cp assets/img/icon_256x.png eDirStat.iconset/icon_256x256.png
-
-          iconutil -c icns eDirStat.iconset --output "$APP_DIR/Contents/Resources/icon.icns"
-
-          # 4. Generate the Info.plist meta file with icon mapping links
-          VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
-          cat <<EOF > "$APP_DIR/Contents/Info.plist"
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleExecutable</key>
-              <string>edirstat</string>
-              <key>CFBundleIconFile</key>
-              <string>icon.icns</string>
-              <key>CFBundleIdentifier</key>
-              <string>to.cody.edirstat</string>
-              <key>CFBundleName</key>
-              <string>eDirStat</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>CFBundleShortVersionString</key>
-              <string>${VERSION}</string>
-              <key>LSMinimumSystemVersion</key>
-              <string>10.15</string>
-          </dict>
-          </plist>
-          EOF
-
-          # 5. Cryptographically sign the bundle locally with sandboxing entitlements
-          codesign --force --options runtime --entitlements entitlements.plist -s - "$APP_DIR"
-
-          # 6. Compress app bundle into a standard .zip archive to protect folder permissions
-          cd staging
-          zip -r "../edirstat-macos-${{ matrix.target }}.zip" eDirStat.app
+      - name: Package (ad-hoc sign)
+        run: ./scripts/package_macos.sh --target "${{ matrix.target }}" --ad-hoc
 
       - name: Upload Asset as Artifact
         uses: actions/upload-artifact@v7
         with:
-          name: edirstat-macos-${{ matrix.target }}.zip
-          path: edirstat-macos-${{ matrix.target }}.zip
+          name: edirstat-macos-${{ matrix.target }}
+          path: edirstat-macos-*.zip
 
   deploy-web:
     name: Deploy Web (Arch Container)
