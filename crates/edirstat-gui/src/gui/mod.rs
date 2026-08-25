@@ -181,6 +181,7 @@ pub struct GuiApp {
 pub(crate) enum Locale {
     #[default]
     EnUs,
+    TrTr,
     EsEs,
     DeDe,
     NlNl,
@@ -193,6 +194,7 @@ pub(crate) enum Locale {
 impl std::fmt::Display for Locale {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::TrTr => write!(f, "tr-TR"),
             Self::EnUs => write!(f, "en-US"),
             Self::EsEs => write!(f, "es-ES"),
             Self::DeDe => write!(f, "de-DE"),
