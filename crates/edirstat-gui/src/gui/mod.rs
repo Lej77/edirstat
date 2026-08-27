@@ -173,6 +173,8 @@ pub struct GuiApp {
 
     pub(crate) locale: Locale,
 
+    pub(crate) locale_preference: Option<Locale>,
+
     #[cfg(all(feature = "online", not(target_family = "wasm")))]
     pub(crate) update_checker: egui_async::Bind<Option<String>, String>,
 }
@@ -237,6 +239,48 @@ impl Locale {
         if let Ok(lang) = fluent_zero::LanguageIdentifier::from_str(self.as_str()) {
             fluent_zero::set_lang(lang);
         }
+    }
+
+    /// Matches a BCP-47 language tag or POSIX locale identifier (e.g. `"tr-TR"`, `"de_DE.UTF-8"`, `"fr"`)
+    /// against supported [`Locale`] variants.
+    #[must_use]
+    pub fn from_bcp47(tag: &str) -> Option<Self> {
+        let clean = tag
+            .split(['.', '@'])
+            .next()?
+            .replace('_', "-")
+            .trim()
+            .to_ascii_lowercase();
+
+        if clean.is_empty() {
+            return None;
+        }
+
+        // 1. Exact match (case-insensitive)
+        if let Some(locale) = Self::iter().find(|l| l.as_str().eq_ignore_ascii_case(&clean)) {
+            return Some(locale);
+        }
+
+        // 2. Base language prefix match (e.g. "de" for "de-AT" or "de_DE")
+        let lang_code = clean.split('-').next()?;
+        if lang_code.is_empty() {
+            return None;
+        }
+
+        Self::iter().find(|l| {
+            let l_prefix = l.as_str().split('-').next().unwrap_or_default();
+            l_prefix.eq_ignore_ascii_case(lang_code)
+        })
+    }
+
+    /// Queries the operating system for the current system locale and matches it
+    /// against supported locales, falling back to [`Locale::default()`] (English).
+    #[must_use]
+    pub fn from_system() -> Self {
+        sys_locale::get_locale()
+            .as_deref()
+            .and_then(Self::from_bcp47)
+            .unwrap_or_default()
     }
 }
 
@@ -313,10 +357,11 @@ impl GuiApp {
         let active_modal = None;
 
         let prefs = crate::preferences::load_preferences();
+        let locale = prefs.locale.unwrap_or_else(Locale::from_system);
 
-        // Keep the Fluent runtime aligned with the saved/default locale
+        // Keep the Fluent runtime aligned with the saved/auto-detected system locale
         // from the very first frame.
-        prefs.locale.apply();
+        locale.apply();
 
         #[cfg(target_family = "wasm")]
         {
@@ -398,7 +443,9 @@ impl GuiApp {
 
             same_filesystem,
 
-            locale: prefs.locale,
+            locale,
+
+            locale_preference: prefs.locale,
 
             #[cfg(all(feature = "online", not(target_family = "wasm")))]
             update_checker: egui_async::Bind::default(),
@@ -1383,6 +1430,7 @@ impl eframe::App for GuiApp {
                             if ui.selectable_label(is_selected, locale.as_str()).clicked() {
                                 locale.apply();
                                 self.locale = locale;
+                                self.locale_preference = Some(locale);
                                 ui.close_kind(egui::UiKind::Menu);
                             }
                         }
@@ -1771,7 +1819,7 @@ impl eframe::App for GuiApp {
             treemap_borders: self.treemap_borders,
             theme: self.theme,
             treemap_style: self.treemap_style,
-            locale: self.locale,
+            locale: self.locale_preference,
         };
 
         if current_prefs != self.last_saved_preferences {
@@ -2558,5 +2606,38 @@ pub fn load_snapshot_from_js(bytes: &[u8], display_name: &str) {
         });
     } else {
         *PENDING_SNAPSHOT.lock() = Some((display_name.to_string(), bytes.to_vec()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_locale_from_bcp47_matching() {
+        assert_eq!(Locale::from_bcp47("tr-TR"), Some(Locale::TrTr));
+        assert_eq!(Locale::from_bcp47("tr_TR.UTF-8"), Some(Locale::TrTr));
+        assert_eq!(Locale::from_bcp47("tr"), Some(Locale::TrTr));
+        assert_eq!(Locale::from_bcp47("de-DE"), Some(Locale::DeDe));
+        assert_eq!(Locale::from_bcp47("de_AT@euro"), Some(Locale::DeDe));
+        assert_eq!(Locale::from_bcp47("es-ES"), Some(Locale::EsEs));
+        assert_eq!(Locale::from_bcp47("es_MX.UTF-8"), Some(Locale::EsEs));
+        assert_eq!(Locale::from_bcp47("fr-FR"), Some(Locale::FrFr));
+        assert_eq!(Locale::from_bcp47("fr_CA"), Some(Locale::FrFr));
+        assert_eq!(Locale::from_bcp47("it-IT"), Some(Locale::ItIt));
+        assert_eq!(Locale::from_bcp47("it_CH"), Some(Locale::ItIt));
+        assert_eq!(Locale::from_bcp47("nl-NL"), Some(Locale::NlNl));
+        assert_eq!(Locale::from_bcp47("nl_BE"), Some(Locale::NlNl));
+        assert_eq!(Locale::from_bcp47("pl-PL"), Some(Locale::PlPl));
+        assert_eq!(Locale::from_bcp47("pl"), Some(Locale::PlPl));
+        assert_eq!(Locale::from_bcp47("pt-PT"), Some(Locale::PtPt));
+        assert_eq!(Locale::from_bcp47("pt-BR"), Some(Locale::PtPt));
+        assert_eq!(Locale::from_bcp47("en-US"), Some(Locale::EnUs));
+        assert_eq!(Locale::from_bcp47("en-GB"), Some(Locale::EnUs));
+        assert_eq!(Locale::from_bcp47("en"), Some(Locale::EnUs));
+
+        // Unsupported / invalid
+        assert_eq!(Locale::from_bcp47("ja-JP"), None);
+        assert_eq!(Locale::from_bcp47(""), None);
     }
 }
