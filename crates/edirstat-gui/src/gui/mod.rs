@@ -200,6 +200,7 @@ pub enum Locale {
     NlNl,
     PlPl,
     PtPt,
+    RuRu,
     TrTr,
 }
 
@@ -214,6 +215,7 @@ impl std::fmt::Display for Locale {
             Self::NlNl => write!(f, "nl-NL"),
             Self::PlPl => write!(f, "pl-PL"),
             Self::PtPt => write!(f, "pt-PT"),
+            Self::RuRu => write!(f, "ru-RU"),
             Self::TrTr => write!(f, "tr-TR"),
         }
     }
@@ -231,6 +233,7 @@ impl Locale {
             Self::NlNl => "nl-NL",
             Self::PlPl => "pl-PL",
             Self::PtPt => "pt-PT",
+            Self::RuRu => "ru-RU",
             Self::TrTr => "tr-TR",
         }
     }
@@ -2632,6 +2635,9 @@ mod tests {
         assert_eq!(Locale::from_bcp47("pl"), Some(Locale::PlPl));
         assert_eq!(Locale::from_bcp47("pt-PT"), Some(Locale::PtPt));
         assert_eq!(Locale::from_bcp47("pt-BR"), Some(Locale::PtPt));
+        assert_eq!(Locale::from_bcp47("ru-RU"), Some(Locale::RuRu));
+        assert_eq!(Locale::from_bcp47("ru_RU.UTF-8"), Some(Locale::RuRu));
+        assert_eq!(Locale::from_bcp47("ru"), Some(Locale::RuRu));
         assert_eq!(Locale::from_bcp47("en-US"), Some(Locale::EnUs));
         assert_eq!(Locale::from_bcp47("en-GB"), Some(Locale::EnUs));
         assert_eq!(Locale::from_bcp47("en"), Some(Locale::EnUs));
