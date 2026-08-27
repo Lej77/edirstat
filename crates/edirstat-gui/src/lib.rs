@@ -35,7 +35,7 @@ pub mod stats;
 pub use edirstat_core::{EdirstatError, arena, file_id, snapshot, state, time_utils};
 pub use gui::theme as colors;
 
-pub use gui::GuiApp;
+pub use gui::{GuiApp, Locale};
 
 // Generated fluent-zero message cache. The generated code uses unwrap/expect
 // and unseparated literals by design; the `t!` macro reaches it via `crate::CACHE`.

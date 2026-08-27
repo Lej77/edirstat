@@ -9,7 +9,7 @@ use std::{
 #[cfg(not(target_family = "wasm"))]
 use std::path::Path;
 
-use compact_str::{CompactString, ToCompactString as _};
+use compact_str::CompactString;
 use eframe::egui;
 use fluent_zero::t;
 use strum::IntoEnumIterator as _;
@@ -177,32 +177,65 @@ pub struct GuiApp {
     pub(crate) update_checker: egui_async::Bind<Option<String>, String>,
 }
 
-#[derive(Default, PartialEq, strum::EnumIter)]
-pub(crate) enum Locale {
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::EnumIter,
+)]
+pub enum Locale {
     #[default]
     EnUs,
-    TrTr,
-    EsEs,
     DeDe,
-    NlNl,
+    EsEs,
     FrFr,
-    PtPt,
     ItIt,
+    NlNl,
     PlPl,
+    PtPt,
+    TrTr,
 }
 
 impl std::fmt::Display for Locale {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::TrTr => write!(f, "tr-TR"),
             Self::EnUs => write!(f, "en-US"),
-            Self::EsEs => write!(f, "es-ES"),
             Self::DeDe => write!(f, "de-DE"),
-            Self::NlNl => write!(f, "nl-NL"),
+            Self::EsEs => write!(f, "es-ES"),
             Self::FrFr => write!(f, "fr-FR"),
-            Self::PtPt => write!(f, "pt-PT"),
             Self::ItIt => write!(f, "it-IT"),
+            Self::NlNl => write!(f, "nl-NL"),
             Self::PlPl => write!(f, "pl-PL"),
+            Self::PtPt => write!(f, "pt-PT"),
+            Self::TrTr => write!(f, "tr-TR"),
+        }
+    }
+}
+
+impl Locale {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EnUs => "en-US",
+            Self::DeDe => "de-DE",
+            Self::EsEs => "es-ES",
+            Self::FrFr => "fr-FR",
+            Self::ItIt => "it-IT",
+            Self::NlNl => "nl-NL",
+            Self::PlPl => "pl-PL",
+            Self::PtPt => "pt-PT",
+            Self::TrTr => "tr-TR",
+        }
+    }
+
+    pub fn apply(self) {
+        if let Ok(lang) = fluent_zero::LanguageIdentifier::from_str(self.as_str()) {
+            fluent_zero::set_lang(lang);
         }
     }
 }
@@ -280,6 +313,10 @@ impl GuiApp {
         let active_modal = None;
 
         let prefs = crate::preferences::load_preferences();
+
+        // Keep the Fluent runtime aligned with the saved/default locale
+        // from the very first frame.
+        prefs.locale.apply();
 
         #[cfg(target_family = "wasm")]
         {
@@ -361,7 +398,7 @@ impl GuiApp {
 
             same_filesystem,
 
-            locale: Locale::default(),
+            locale: prefs.locale,
 
             #[cfg(all(feature = "online", not(target_family = "wasm")))]
             update_checker: egui_async::Bind::default(),
@@ -1343,17 +1380,8 @@ impl eframe::App for GuiApp {
                     ui.menu_button(t!("language"), |ui| {
                         for locale in Locale::iter() {
                             let is_selected = self.locale == locale;
-                            let locale_str = locale.to_compact_string();
-                            if ui
-                                .selectable_label(is_selected, locale_str.as_str())
-                                .clicked()
-                            {
-                                if let Ok(lang) =
-                                    fluent_zero::LanguageIdentifier::from_str(&locale_str)
-                                {
-                                    fluent_zero::set_lang(lang);
-                                }
-
+                            if ui.selectable_label(is_selected, locale.as_str()).clicked() {
+                                locale.apply();
                                 self.locale = locale;
                                 ui.close_kind(egui::UiKind::Menu);
                             }
@@ -1743,6 +1771,7 @@ impl eframe::App for GuiApp {
             treemap_borders: self.treemap_borders,
             theme: self.theme,
             treemap_style: self.treemap_style,
+            locale: self.locale,
         };
 
         if current_prefs != self.last_saved_preferences {
