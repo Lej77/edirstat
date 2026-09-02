@@ -180,6 +180,7 @@ type-file = Fichier
 
 # Explorer Actions
 explorer-action-copy-path = 📋 Copier le chemin
+explorer-action-open-file = 📄 Ouvrir le fichier
 explorer-action-open-manager = 🗁 Ouvrir le gestionnaire
 explorer-action-refresh-subtree = 🔄 Rafraîchir le sous-arbre
 explorer-action-move-trash = ♻ Déplacer vers la corbeille
@@ -203,6 +204,7 @@ extensions-hover-files = Fichiers: { $count }
 op-up-one-level = Monter d'un niveau
 op-refresh-entire-scan = Actualiser toute l'analyse
 op-refresh-directory = Actualiser le répertoire
+op-open-file = Ouvrir le fichier
 op-open-file-manager = Ouvrir dans le gestionnaire de fichiers
 op-open-terminal = Ouvrir un terminal ici
 op-copy-path = Copier le chemin
@@ -215,6 +217,8 @@ toast-already-root = Déjà au niveau racine
 toast-navigated-up = Navigation d'un niveau vers le haut
 toast-refreshing-scan = Actualisation de toute l'analyse...
 toast-refreshing-dir = Actualisation du ou des répertoires sélectionnés...
+toast-opened-file = Ouvert: { $path }
+toast-failed-open-file = Échec de l'ouverture du fichier: { $error }
 toast-opened-manager = Ouvert dans le gestionnaire de fichiers: { $path }
 toast-failed-open-manager = Échec de l'ouverture du gestionnaire de fichiers: { $error }
 toast-opened-terminal = Terminal ouvert à l'emplacement: { $path }

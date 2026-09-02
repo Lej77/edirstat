@@ -667,7 +667,31 @@ impl super::GuiApp {
                                                 .strong()
                                                 .color(crate::colors::COLOR_DUPLICATE_ORANGE) // Orange for duplicate
                                         };
-                                        ui.label(name_rich).on_hover_text(&filename);
+                                        let name_response = if is_scan_running {
+                                            ui.label(name_rich).on_hover_text(&filename)
+                                        } else {
+                                            let r = ui
+                                                .add(
+                                                    egui::Label::new(name_rich)
+                                                        .sense(egui::Sense::click()),
+                                                )
+                                                .on_hover_text(&filename);
+                                            if r.hovered() {
+                                                ui.ctx().set_cursor_icon(
+                                                    egui::CursorIcon::PointingHand,
+                                                );
+                                            }
+                                            r
+                                        };
+                                        if !is_scan_running && name_response.clicked() {
+                                            #[cfg(not(target_family = "wasm"))]
+                                            {
+                                                let full_file_path =
+                                                    std::path::Path::new(&parent_path)
+                                                        .join(&filename);
+                                                let _ = open::that(&full_file_path);
+                                            }
+                                        }
                                         if is_hardlink {
                                             ui.add_space(4.0);
                                             let frame = egui::Frame::new()

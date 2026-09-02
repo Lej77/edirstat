@@ -428,4 +428,115 @@ mod tests {
         assert_eq!(ext_sizes.get("png"), Some(&100));
         assert_eq!(ext_sizes.get("txt"), Some(&200));
     }
+
+    #[test]
+    fn test_dir_composition_top_eight_children() {
+        // 10 children with descending sizes: only the 8 largest survive, largest first.
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let mut nodes = vec![FileNode::new(r_id, None, true, false, 0, 0)];
+        for i in 0..10u64 {
+            let c_id = pool.get_or_insert(format!("c{i}").as_bytes());
+            let mut node = FileNode::new(c_id, Some(0), false, false, 0, 0);
+            node.size = 1000 - i * 100;
+            nodes.push(node);
+        }
+        nodes[0].first_child = 1;
+        for (i, node) in nodes.iter_mut().enumerate().skip(1).take(9) {
+            node.next_sibling = (i + 1) as u32;
+        }
+
+        let dir_counts = precompute_dir_counts(&nodes);
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(dir_counts),
+        };
+
+        let mut chart = DirCompositionChart::new(0);
+        chart.compute(&snapshot);
+
+        assert_eq!(chart.children_composition.len(), 8);
+        assert_eq!(chart.children_composition[0].0, "c0");
+        assert_eq!(chart.children_composition[0].2, 1000);
+        assert_eq!(chart.children_composition[7].2, 300);
+        for w in chart.children_composition.windows(2) {
+            assert!(w[0].2 >= w[1].2);
+        }
+    }
+
+    #[test]
+    fn test_dir_composition_top_five_extensions() {
+        // 7 distinct extensions: only the 5 largest by aggregate size are kept, descending.
+        let exts = ["aa", "bb", "cc", "dd", "ee", "ff", "gg"];
+
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let mut nodes = vec![FileNode::new(r_id, None, true, false, 0, 0)];
+        for (i, ext) in exts.iter().enumerate() {
+            let f_id = pool.get_or_insert(format!("f{i}.{ext}").as_bytes());
+            let mut node = FileNode::new(f_id, Some(0), false, false, 0, 0);
+            node.size = 700 - (i as u64) * 100;
+            nodes.push(node);
+        }
+        nodes[0].first_child = 1;
+        for (i, node) in nodes.iter_mut().enumerate().skip(1).take(6) {
+            node.next_sibling = (i + 1) as u32;
+        }
+
+        let dir_counts = precompute_dir_counts(&nodes);
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(dir_counts),
+        };
+
+        let mut chart = DirCompositionChart::new(0);
+        chart.compute(&snapshot);
+
+        assert_eq!(chart.top_extensions.len(), 5);
+        let top: Vec<&str> = chart.top_extensions.iter().map(String::as_str).collect();
+        assert_eq!(top, vec!["aa", "bb", "cc", "dd", "ee"]);
+    }
+
+    #[test]
+    fn test_gather_dir_extensions_nested_and_file_start() {
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let a_id = pool.get_or_insert(b"a.txt");
+        let sub_id = pool.get_or_insert(b"sub");
+        let b_id = pool.get_or_insert(b"b.txt");
+        let deep_id = pool.get_or_insert(b"deep");
+        let c_id = pool.get_or_insert(b"c.rs");
+
+        let mut nodes = vec![
+            FileNode::new(r_id, None, true, false, 0, 0),
+            FileNode::new(a_id, Some(0), false, false, 0, 0),
+            FileNode::new(sub_id, Some(0), true, false, 0, 0),
+            FileNode::new(b_id, Some(2), false, false, 0, 0),
+            FileNode::new(deep_id, Some(2), true, false, 0, 0),
+            FileNode::new(c_id, Some(4), false, false, 0, 0),
+        ];
+        nodes[0].first_child = 1;
+        nodes[1].next_sibling = 2;
+        nodes[2].first_child = 3;
+        nodes[3].next_sibling = 4;
+        nodes[4].first_child = 5;
+        nodes[1].size = 10;
+        nodes[3].size = 20;
+        nodes[5].size = 5;
+
+        // Sizes accumulate from every depth of the subtree.
+        let mut ext_sizes = HashMap::with_hasher(ahash::RandomState::new());
+        gather_dir_extensions(&nodes, &pool, 0, &mut ext_sizes);
+        assert_eq!(ext_sizes.len(), 2);
+        assert_eq!(ext_sizes.get("txt"), Some(&30));
+        assert_eq!(ext_sizes.get("rs"), Some(&5));
+
+        // A file passed directly as start_idx contributes its own extension.
+        let mut single = HashMap::with_hasher(ahash::RandomState::new());
+        gather_dir_extensions(&nodes, &pool, 1, &mut single);
+        assert_eq!(single.len(), 1);
+        assert_eq!(single.get("txt"), Some(&10));
+    }
 }

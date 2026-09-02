@@ -183,6 +183,7 @@ type-file = Plik
 
 # Explorer Actions
 explorer-action-copy-path = 📋 Kopiuj ścieżkę
+explorer-action-open-file = 📄 Otwórz plik
 explorer-action-open-manager = 🗁 Otwórz menedżer plików
 explorer-action-refresh-subtree = 🔄 Odśwież poddrzewo
 explorer-action-move-trash = ♻ Przenieś do kosza
@@ -206,6 +207,7 @@ extensions-hover-files = Pliki: { $count }
 op-up-one-level = Przejdź poziom wyżej
 op-refresh-entire-scan = Odśwież całe skanowanie
 op-refresh-directory = Odśwież katalog
+op-open-file = Otwórz plik
 op-open-file-manager = Otwórz w menedżerze plików
 op-open-terminal = Otwórz terminal tutaj
 op-copy-path = Kopiuj ścieżkę
@@ -218,6 +220,8 @@ toast-already-root = Jesteś już na najwyższym poziomie
 toast-navigated-up = Przejście o poziom wyżej powiodło się
 toast-refreshing-scan = Odświeżanie całego skanowania...
 toast-refreshing-dir = Odświeżanie zaznaczonych katalogów...
+toast-opened-file = Otwarto: { $path }
+toast-failed-open-file = Nie udało się otworzyć pliku: { $error }
 toast-opened-manager = Otwarto w menedżerze plików: { $path }
 toast-failed-open-manager = Nie udało się otworzyć menedżera plików: { $error }
 toast-opened-terminal = Otwarto terminal w: { $path }

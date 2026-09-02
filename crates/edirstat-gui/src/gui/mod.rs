@@ -9,7 +9,7 @@ use std::{
 #[cfg(not(target_family = "wasm"))]
 use std::path::Path;
 
-use compact_str::{CompactString, ToCompactString as _};
+use compact_str::CompactString;
 use eframe::egui;
 use fluent_zero::t;
 use strum::IntoEnumIterator as _;
@@ -34,11 +34,13 @@ pub mod deduplicator;
 pub mod explorer;
 pub mod extensions;
 pub mod modals;
+pub mod notifications;
 pub mod operations;
 pub mod theme;
 
 pub use extensions::ExtensionStat;
 pub use modals::ActiveModal;
+pub use notifications::{show_toasts, toast_error, toast_info, toast_success, toast_warning};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisMode {
@@ -171,35 +173,117 @@ pub struct GuiApp {
 
     pub(crate) locale: Locale,
 
+    pub(crate) locale_preference: Option<Locale>,
+
     #[cfg(all(feature = "online", not(target_family = "wasm")))]
     pub(crate) update_checker: egui_async::Bind<Option<String>, String>,
 }
 
-#[derive(Default, PartialEq, strum::EnumIter)]
-pub(crate) enum Locale {
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::EnumIter,
+)]
+pub enum Locale {
     #[default]
     EnUs,
-    EsEs,
     DeDe,
-    NlNl,
+    EsEs,
     FrFr,
-    PtPt,
     ItIt,
+    NlNl,
     PlPl,
+    PtPt,
+    RuRu,
+    TrTr,
 }
 
 impl std::fmt::Display for Locale {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::EnUs => write!(f, "en-US"),
-            Self::EsEs => write!(f, "es-ES"),
             Self::DeDe => write!(f, "de-DE"),
-            Self::NlNl => write!(f, "nl-NL"),
+            Self::EsEs => write!(f, "es-ES"),
             Self::FrFr => write!(f, "fr-FR"),
-            Self::PtPt => write!(f, "pt-PT"),
             Self::ItIt => write!(f, "it-IT"),
+            Self::NlNl => write!(f, "nl-NL"),
             Self::PlPl => write!(f, "pl-PL"),
+            Self::PtPt => write!(f, "pt-PT"),
+            Self::RuRu => write!(f, "ru-RU"),
+            Self::TrTr => write!(f, "tr-TR"),
         }
+    }
+}
+
+impl Locale {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EnUs => "en-US",
+            Self::DeDe => "de-DE",
+            Self::EsEs => "es-ES",
+            Self::FrFr => "fr-FR",
+            Self::ItIt => "it-IT",
+            Self::NlNl => "nl-NL",
+            Self::PlPl => "pl-PL",
+            Self::PtPt => "pt-PT",
+            Self::RuRu => "ru-RU",
+            Self::TrTr => "tr-TR",
+        }
+    }
+
+    pub fn apply(self) {
+        if let Ok(lang) = fluent_zero::LanguageIdentifier::from_str(self.as_str()) {
+            fluent_zero::set_lang(lang);
+        }
+    }
+
+    /// Matches a BCP-47 language tag or POSIX locale identifier (e.g. `"tr-TR"`, `"de_DE.UTF-8"`, `"fr"`)
+    /// against supported [`Locale`] variants.
+    #[must_use]
+    pub fn from_bcp47(tag: &str) -> Option<Self> {
+        let clean = tag
+            .split(['.', '@'])
+            .next()?
+            .replace('_', "-")
+            .trim()
+            .to_ascii_lowercase();
+
+        if clean.is_empty() {
+            return None;
+        }
+
+        // 1. Exact match (case-insensitive)
+        if let Some(locale) = Self::iter().find(|l| l.as_str().eq_ignore_ascii_case(&clean)) {
+            return Some(locale);
+        }
+
+        // 2. Base language prefix match (e.g. "de" for "de-AT" or "de_DE")
+        let lang_code = clean.split('-').next()?;
+        if lang_code.is_empty() {
+            return None;
+        }
+
+        Self::iter().find(|l| {
+            let l_prefix = l.as_str().split('-').next().unwrap_or_default();
+            l_prefix.eq_ignore_ascii_case(lang_code)
+        })
+    }
+
+    /// Queries the operating system for the current system locale and matches it
+    /// against supported locales, falling back to [`Locale::default()`] (English).
+    #[must_use]
+    pub fn from_system() -> Self {
+        sys_locale::get_locale()
+            .as_deref()
+            .and_then(Self::from_bcp47)
+            .unwrap_or_default()
     }
 }
 
@@ -233,6 +317,9 @@ impl GuiApp {
 
         if crate::IS_NATIVE || !crate::HIDE_NA_UI {
             operations = operations.with_group(vec![
+                Box::new(crate::gui::operations::OpenFileOp::new(
+                    shared_state.clone(),
+                )),
                 Box::new(crate::gui::operations::OpenFileManagerOp::new(
                     shared_state.clone(),
                 )),
@@ -273,6 +360,11 @@ impl GuiApp {
         let active_modal = None;
 
         let prefs = crate::preferences::load_preferences();
+        let locale = prefs.locale.unwrap_or_else(Locale::from_system);
+
+        // Keep the Fluent runtime aligned with the saved/auto-detected system locale
+        // from the very first frame.
+        locale.apply();
 
         #[cfg(target_family = "wasm")]
         {
@@ -354,7 +446,9 @@ impl GuiApp {
 
             same_filesystem,
 
-            locale: Locale::default(),
+            locale,
+
+            locale_preference: prefs.locale,
 
             #[cfg(all(feature = "online", not(target_family = "wasm")))]
             update_checker: egui_async::Bind::default(),
@@ -1252,7 +1346,7 @@ impl eframe::App for GuiApp {
                 );
                 ui.add(
                     egui::Image::new(egui::include_image!(
-                        "../../../../assets/img/icon-transparent.png"
+                        "../../assets/img/icon-transparent.png"
                     ))
                     .max_height(24.0),
                 );
@@ -1340,18 +1434,10 @@ impl eframe::App for GuiApp {
                     ui.menu_button(t!("language"), |ui| {
                         for locale in Locale::iter() {
                             let is_selected = self.locale == locale;
-                            let locale_str = locale.to_compact_string();
-                            if ui
-                                .selectable_label(is_selected, locale_str.as_str())
-                                .clicked()
-                            {
-                                if let Ok(lang) =
-                                    fluent_zero::LanguageIdentifier::from_str(&locale_str)
-                                {
-                                    fluent_zero::set_lang(lang);
-                                }
-
+                            if ui.selectable_label(is_selected, locale.as_str()).clicked() {
+                                locale.apply();
                                 self.locale = locale;
+                                self.locale_preference = Some(locale);
                                 ui.close_kind(egui::UiKind::Menu);
                             }
                         }
@@ -1740,6 +1826,7 @@ impl eframe::App for GuiApp {
             treemap_borders: self.treemap_borders,
             theme: self.theme,
             treemap_style: self.treemap_style,
+            locale: self.locale_preference,
         };
 
         if current_prefs != self.last_saved_preferences {
@@ -1853,7 +1940,7 @@ impl GuiApp {
             ui.add_space(80.0);
             ui.add(
                 egui::Image::new(egui::include_image!(
-                    "../../../../assets/img/logo-nosubtext-transparent.png"
+                    "../../assets/img/logo-nosubtext-transparent.png"
                 ))
                 .max_height(140.0),
             );
@@ -2497,47 +2584,6 @@ fn open_terminal_at(path: &Path) -> std::io::Result<()> {
     }
 }
 
-pub static TOASTS: std::sync::LazyLock<parking_lot::Mutex<egui_notify::Toasts>> =
-    std::sync::LazyLock::new(|| {
-        parking_lot::Mutex::new(
-            egui_notify::Toasts::new()
-                .with_anchor(egui_notify::Anchor::BottomRight)
-                .with_margin(egui::vec2(10.0, 30.0)),
-        )
-    });
-
-pub fn toast_success(message: impl Into<egui::WidgetText>) {
-    TOASTS
-        .lock()
-        .success(message)
-        .duration(Some(Duration::from_secs(4)));
-}
-
-pub fn toast_info(message: impl Into<egui::WidgetText>) {
-    TOASTS
-        .lock()
-        .info(message)
-        .duration(Some(Duration::from_secs(4)));
-}
-
-pub fn toast_warning(message: impl Into<egui::WidgetText>) {
-    TOASTS
-        .lock()
-        .warning(message)
-        .duration(Some(Duration::from_secs(8)));
-}
-
-pub fn toast_error(message: impl Into<egui::WidgetText>) {
-    TOASTS
-        .lock()
-        .error(message)
-        .duration(Some(Duration::from_secs(16)));
-}
-
-pub fn show_toasts(ctx: &egui::Context) {
-    TOASTS.lock().show(ctx);
-}
-
 #[cfg(target_family = "wasm")]
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = "
     export function load_demo_via_js() {
@@ -2567,5 +2613,41 @@ pub fn load_snapshot_from_js(bytes: &[u8], display_name: &str) {
         });
     } else {
         *PENDING_SNAPSHOT.lock() = Some((display_name.to_string(), bytes.to_vec()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_locale_from_bcp47_matching() {
+        assert_eq!(Locale::from_bcp47("tr-TR"), Some(Locale::TrTr));
+        assert_eq!(Locale::from_bcp47("tr_TR.UTF-8"), Some(Locale::TrTr));
+        assert_eq!(Locale::from_bcp47("tr"), Some(Locale::TrTr));
+        assert_eq!(Locale::from_bcp47("de-DE"), Some(Locale::DeDe));
+        assert_eq!(Locale::from_bcp47("de_AT@euro"), Some(Locale::DeDe));
+        assert_eq!(Locale::from_bcp47("es-ES"), Some(Locale::EsEs));
+        assert_eq!(Locale::from_bcp47("es_MX.UTF-8"), Some(Locale::EsEs));
+        assert_eq!(Locale::from_bcp47("fr-FR"), Some(Locale::FrFr));
+        assert_eq!(Locale::from_bcp47("fr_CA"), Some(Locale::FrFr));
+        assert_eq!(Locale::from_bcp47("it-IT"), Some(Locale::ItIt));
+        assert_eq!(Locale::from_bcp47("it_CH"), Some(Locale::ItIt));
+        assert_eq!(Locale::from_bcp47("nl-NL"), Some(Locale::NlNl));
+        assert_eq!(Locale::from_bcp47("nl_BE"), Some(Locale::NlNl));
+        assert_eq!(Locale::from_bcp47("pl-PL"), Some(Locale::PlPl));
+        assert_eq!(Locale::from_bcp47("pl"), Some(Locale::PlPl));
+        assert_eq!(Locale::from_bcp47("pt-PT"), Some(Locale::PtPt));
+        assert_eq!(Locale::from_bcp47("pt-BR"), Some(Locale::PtPt));
+        assert_eq!(Locale::from_bcp47("ru-RU"), Some(Locale::RuRu));
+        assert_eq!(Locale::from_bcp47("ru_RU.UTF-8"), Some(Locale::RuRu));
+        assert_eq!(Locale::from_bcp47("ru"), Some(Locale::RuRu));
+        assert_eq!(Locale::from_bcp47("en-US"), Some(Locale::EnUs));
+        assert_eq!(Locale::from_bcp47("en-GB"), Some(Locale::EnUs));
+        assert_eq!(Locale::from_bcp47("en"), Some(Locale::EnUs));
+
+        // Unsupported / invalid
+        assert_eq!(Locale::from_bcp47("ja-JP"), None);
+        assert_eq!(Locale::from_bcp47(""), None);
     }
 }

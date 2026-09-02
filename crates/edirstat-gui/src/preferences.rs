@@ -6,7 +6,11 @@ use serde::{Deserialize, Serialize};
 #[cfg(not(target_family = "wasm"))]
 use directories::ProjectDirs;
 
-use crate::{gui::theme::ThemePreference, stats::treemap::TreemapStyle, time_utils::TimeFormat};
+use crate::{
+    gui::{Locale, theme::ThemePreference},
+    stats::treemap::TreemapStyle,
+    time_utils::TimeFormat,
+};
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,6 +31,8 @@ pub struct UserPreferences {
     pub theme: ThemePreference,
     #[serde(default)]
     pub treemap_style: TreemapStyle,
+    #[serde(default)]
+    pub locale: Option<Locale>,
 }
 
 const fn default_true() -> bool {
@@ -44,6 +50,7 @@ impl Default for UserPreferences {
             treemap_borders: false,
             theme: ThemePreference::default(),
             treemap_style: TreemapStyle::default(),
+            locale: None,
         }
     }
 }
@@ -104,12 +111,13 @@ mod tests {
         assert!(!prefs.treemap_borders);
         assert_eq!(prefs.theme, ThemePreference::System);
         assert_eq!(prefs.treemap_style, TreemapStyle::OffsetVerticalGradient);
+        assert_eq!(prefs.locale, None);
     }
 
     #[test]
     fn test_deserialize_legacy_config() -> Result<(), toml::de::Error> {
-        // Legacy config missing the confirmation fields should default to true
-        // and missing treemap_borders should default to false
+        // Legacy config missing the confirmation fields should default to true,
+        // missing treemap_borders should default to false, and missing locale to None
         let legacy_toml = r"
             monospace_paths = true
             highlight_duplicates = false
@@ -122,6 +130,7 @@ mod tests {
         assert!(!prefs.treemap_borders);
         assert_eq!(prefs.theme, ThemePreference::System);
         assert_eq!(prefs.treemap_style, TreemapStyle::OffsetVerticalGradient);
+        assert_eq!(prefs.locale, None);
 
         Ok(())
     }
@@ -134,6 +143,7 @@ mod tests {
             monospace_paths: true,
             theme: ThemePreference::Light,
             treemap_style: TreemapStyle::Cushion,
+            locale: Some(Locale::TrTr),
             ..Default::default()
         };
 

@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 documentation = "https://docs.rs/edirstat"
+readme = "../../README.md"
 repository.workspace = true
 authors.workspace = true
 categories = [
@@ -22,7 +23,6 @@ include = [
     "/assets/**/*",
     "/build.rs",
     "/LICENSE",
-    "/README.md",
 ]
 
 [features]
@@ -42,12 +42,12 @@ edirstat-gui = { path = "../edirstat-gui", default-features = false, optional = 
 ahash = "0.8.12"
 anyhow = "1.0.104"
 bytemuck = { version = "1.25.2", features = ["derive"] }
-clap = { version = "4.6.5", features = ["derive"], optional = true }
+clap = { version = "4.6.6", features = ["derive"], optional = true }
 cli-or-gui = { version = "0.1.1", optional = true }
 compact_str = "0.10.0"
 crc-fast = "1.10.0"
 crossbeam = "0.8.4"
-eframe = { version = "0.35.0", optional = true }
+eframe = { version = "0.36.1", optional = true }
 mimalloc-rspack = { version = "0.2.4", features = ["v3"], optional = true }
 parking_lot = { version = "0.12.5", features = ["hardware-lock-elision"] }
 rayon = "1.12.0"

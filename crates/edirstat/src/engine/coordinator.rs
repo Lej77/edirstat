@@ -337,3 +337,264 @@ const fn connect_child(
     // Update the last child pointer for this parent
     last_child_map[p_idx] = child_global_id;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_propagate_all_sizes_bottom_up() {
+        let mut pool = StringPool::new();
+        let root_name = pool.get_or_insert(b"/root");
+        let f1_name = pool.get_or_insert(b"f1");
+        let d1_name = pool.get_or_insert(b"d1");
+        let f2_name = pool.get_or_insert(b"f2");
+
+        // root (dir) <- f1 (file, 100B), d1 (dir) <- f2 (file, 50B)
+        let mut arena = vec![
+            FileNode::new(root_name, None, true, false, 0, 0),
+            FileNode::new(f1_name, Some(0), false, false, 1000, 500),
+            FileNode::new(d1_name, Some(0), true, false, 0, 0),
+            FileNode::new(f2_name, Some(2), false, false, 2000, 700),
+        ];
+        arena[1].size = 100;
+        arena[3].size = 50;
+
+        propagate_all_sizes_bottom_up(&mut arena);
+
+        // Sizes and file counts accumulate from the leaves to the root
+        assert_eq!(arena[2].size, 50);
+        assert_eq!(arena[2].file_count, 1);
+        assert_eq!(arena[0].size, 150);
+        assert_eq!(arena[0].file_count, 2);
+        // Parents take the maximum of their children's timestamps
+        assert_eq!(arena[2].modified_timestamp, 2000);
+        assert_eq!(arena[2].created_timestamp, 700);
+        assert_eq!(arena[0].modified_timestamp, 2000);
+        assert_eq!(arena[0].created_timestamp, 700);
+    }
+
+    #[test]
+    fn test_register_and_resolve_id() {
+        let mut id_map: Vec<Vec<u32>> = Vec::new();
+        register_id(&mut id_map, 0, LocalId(5), 42);
+
+        assert_eq!(resolve_id(&id_map, 0, LocalId(5)), Some(42));
+        // Never-registered local id on a known worker
+        assert_eq!(resolve_id(&id_map, 0, LocalId(6)), None);
+        // Never-registered worker
+        assert_eq!(resolve_id(&id_map, 3, LocalId(9)), None);
+    }
+
+    #[test]
+    fn test_coordinator_drops_events_with_unresolvable_parent() -> Result<(), crate::EdirstatError>
+    {
+        let shared = Arc::new(SharedState::new());
+        let (tx, rx) = crossbeam::channel::unbounded();
+
+        // Worker 7 / LocalId 42 was never registered: the event is dropped silently
+        tx.send(vec![ScanEvent::FileDiscovered {
+            parent_worker_id: 7,
+            local_parent_id: LocalId(42),
+            name: CompactString::new("x"),
+            size: 10,
+            is_symlink: false,
+            modified_timestamp: 0,
+            created_timestamp: 0,
+            no_permission: false,
+        }])
+        .map_err(std::io::Error::other)?;
+        drop(tx);
+
+        let mut coordinator = Coordinator::new(rx, shared.clone());
+        coordinator.run_coordinator_loop("/root");
+
+        let snapshot = shared.current_snapshot.load();
+        assert_eq!(snapshot.nodes.len(), 1);
+        assert!(snapshot.nodes[0].is_directory());
+        assert!(shared.extension_stats.load().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_coordinator_skips_sentinel_flush_event() -> Result<(), crate::EdirstatError> {
+        let shared = Arc::new(SharedState::new());
+        let (tx, rx) = crossbeam::channel::unbounded();
+
+        // Empty name + zero size is the directory-completion sentinel, not a file
+        tx.send(vec![ScanEvent::FileDiscovered {
+            parent_worker_id: 0,
+            local_parent_id: LocalId(0),
+            name: CompactString::default(),
+            size: 0,
+            is_symlink: false,
+            modified_timestamp: 0,
+            created_timestamp: 0,
+            no_permission: false,
+        }])
+        .map_err(std::io::Error::other)?;
+        drop(tx);
+
+        let mut coordinator = Coordinator::new(rx, shared.clone());
+        coordinator.run_coordinator_loop("/root");
+
+        let snapshot = shared.current_snapshot.load();
+        assert_eq!(snapshot.nodes.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_coordinator_permission_denied_sets_flag() -> Result<(), crate::EdirstatError> {
+        let shared = Arc::new(SharedState::new());
+        let (tx, rx) = crossbeam::channel::unbounded();
+
+        tx.send(vec![
+            ScanEvent::DirDiscovered {
+                parent_worker_id: 0,
+                child_worker_id: 0,
+                local_parent_id: LocalId(0),
+                local_child_id: LocalId(1),
+                name: CompactString::new("d"),
+                modified_timestamp: 0,
+                created_timestamp: 0,
+                no_permission: false,
+            },
+            ScanEvent::PermissionDenied {
+                worker_id: 0,
+                local_id: LocalId(1),
+            },
+        ])
+        .map_err(std::io::Error::other)?;
+        drop(tx);
+
+        let mut coordinator = Coordinator::new(rx, shared.clone());
+        coordinator.run_coordinator_loop("/root");
+
+        let snapshot = shared.current_snapshot.load();
+        assert_eq!(snapshot.nodes.len(), 2);
+        assert!(!snapshot.nodes[0].has_no_permission());
+        assert_eq!(
+            snapshot.string_pool.get(snapshot.nodes[1].name_id),
+            Some("d")
+        );
+        assert!(snapshot.nodes[1].has_no_permission());
+        Ok(())
+    }
+
+    #[test]
+    fn test_coordinator_builds_tree_from_events() -> Result<(), crate::EdirstatError> {
+        let shared = Arc::new(SharedState::new());
+        let (tx, rx) = crossbeam::channel::unbounded();
+
+        tx.send(vec![
+            ScanEvent::DirDiscovered {
+                parent_worker_id: 0,
+                child_worker_id: 0,
+                local_parent_id: LocalId(0),
+                local_child_id: LocalId(1),
+                name: CompactString::new("d1"),
+                modified_timestamp: 0,
+                created_timestamp: 0,
+                no_permission: false,
+            },
+            ScanEvent::FileDiscovered {
+                parent_worker_id: 0,
+                local_parent_id: LocalId(1),
+                name: CompactString::new("f1"),
+                size: 64,
+                is_symlink: false,
+                modified_timestamp: 0,
+                created_timestamp: 0,
+                no_permission: false,
+            },
+            ScanEvent::FileDiscovered {
+                parent_worker_id: 0,
+                local_parent_id: LocalId(0),
+                name: CompactString::new("f2"),
+                size: 36,
+                is_symlink: false,
+                modified_timestamp: 0,
+                created_timestamp: 0,
+                no_permission: false,
+            },
+        ])
+        .map_err(std::io::Error::other)?;
+        drop(tx);
+
+        let mut coordinator = Coordinator::new(rx, shared.clone());
+        coordinator.run_coordinator_loop("/root");
+
+        let snapshot = shared.current_snapshot.load();
+        assert_eq!(snapshot.nodes.len(), 4);
+
+        let root = &snapshot.nodes[0];
+        assert!(root.is_directory());
+        assert_eq!(root.size, 100);
+        assert_eq!(root.file_count, 2);
+
+        let d1 = &snapshot.nodes[1];
+        assert_eq!(snapshot.string_pool.get(d1.name_id), Some("d1"));
+        assert!(d1.is_directory());
+        assert_eq!(d1.parent, 0);
+        assert_eq!(d1.size, 64);
+        assert_eq!(d1.file_count, 1);
+
+        let f1 = &snapshot.nodes[2];
+        assert_eq!(snapshot.string_pool.get(f1.name_id), Some("f1"));
+        assert!(!f1.is_directory());
+        assert_eq!(f1.parent, 1);
+        assert_eq!(f1.size, 64);
+
+        let f2 = &snapshot.nodes[3];
+        assert_eq!(snapshot.string_pool.get(f2.name_id), Some("f2"));
+        assert_eq!(f2.parent, 0);
+        assert_eq!(f2.size, 36);
+
+        assert_eq!(snapshot.get_full_path(0), "/root");
+        assert_eq!(snapshot.get_full_path(1), "/root/d1");
+        assert_eq!(snapshot.get_full_path(2), "/root/d1/f1");
+        assert_eq!(snapshot.get_full_path(3), "/root/f2");
+        Ok(())
+    }
+
+    #[test]
+    fn test_coordinator_extension_stats_case_insensitive() -> Result<(), crate::EdirstatError> {
+        let shared = Arc::new(SharedState::new());
+        let (tx, rx) = crossbeam::channel::unbounded();
+
+        tx.send(vec![
+            ScanEvent::FileDiscovered {
+                parent_worker_id: 0,
+                local_parent_id: LocalId(0),
+                name: CompactString::new("A.TXT"),
+                size: 10,
+                is_symlink: false,
+                modified_timestamp: 0,
+                created_timestamp: 0,
+                no_permission: false,
+            },
+            ScanEvent::FileDiscovered {
+                parent_worker_id: 0,
+                local_parent_id: LocalId(0),
+                name: CompactString::new("b.txt"),
+                size: 20,
+                is_symlink: false,
+                modified_timestamp: 0,
+                created_timestamp: 0,
+                no_permission: false,
+            },
+        ])
+        .map_err(std::io::Error::other)?;
+        drop(tx);
+
+        let mut coordinator = Coordinator::new(rx, shared.clone());
+        coordinator.run_coordinator_loop("/root");
+
+        let stats = shared.extension_stats.load();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].0.as_str(), "txt");
+        assert_eq!(stats[0].1, 30);
+        assert_eq!(stats[0].2, 2);
+        Ok(())
+    }
+}

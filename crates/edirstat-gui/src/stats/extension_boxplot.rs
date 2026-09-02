@@ -296,4 +296,112 @@ mod tests {
         assert_eq!(spread.quartile3, 4.0);
         assert_eq!(spread.upper_whisker, 4.0);
     }
+
+    #[test]
+    fn test_extension_boxplot_quartile_indexing() {
+        // 8 samples with log10(size) == 1.0..=8.0 exercise the index-based quartiles:
+        // min=s[0], q1=s[8/4]=s[2], median=s[4], q3=s[6], max=s[7].
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let mut nodes = vec![FileNode::new(r_id, None, true, false, 0, 0)];
+        for i in 1..=8u32 {
+            let f_id = pool.get_or_insert(format!("f{i}.dat").as_bytes());
+            let mut node = FileNode::new(f_id, Some(0), false, false, 0, 0);
+            node.size = 10u64.pow(i);
+            nodes.push(node);
+        }
+
+        let dir_counts = precompute_dir_counts(&nodes);
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(dir_counts),
+        };
+
+        let mut chart = ExtensionBoxplotChart::new();
+        chart.compute(&snapshot);
+
+        assert_eq!(chart.computed_spreads.len(), 1);
+        let (ext, spread) = &chart.computed_spreads[0];
+        assert_eq!(ext, "dat");
+
+        let eps = 1e-9;
+        assert!((spread.lower_whisker - 1.0).abs() < eps);
+        assert!((spread.quartile1 - 3.0).abs() < eps);
+        assert!((spread.median - 5.0).abs() < eps);
+        assert!((spread.quartile3 - 7.0).abs() < eps);
+        assert!((spread.upper_whisker - 8.0).abs() < eps);
+    }
+
+    #[test]
+    fn test_extension_boxplot_truncates_to_six_categories() {
+        // 8 extensions with sample counts 10,9,8,7,6,5,4,4: the top 6 by count survive.
+        let groups = [
+            ("n10", 10usize),
+            ("n9", 9),
+            ("n8", 8),
+            ("n7", 7),
+            ("n6", 6),
+            ("n5", 5),
+            ("n4a", 4),
+            ("n4b", 4),
+        ];
+
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let mut nodes = vec![FileNode::new(r_id, None, true, false, 0, 0)];
+        for (ext, count) in groups {
+            for file_idx in 0..count {
+                let f_id = pool.get_or_insert(format!("f{file_idx}.{ext}").as_bytes());
+                let mut node = FileNode::new(f_id, Some(0), false, false, 0, 0);
+                node.size = 100;
+                nodes.push(node);
+            }
+        }
+
+        let dir_counts = precompute_dir_counts(&nodes);
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(dir_counts),
+        };
+
+        let mut chart = ExtensionBoxplotChart::new();
+        chart.compute(&snapshot);
+
+        assert_eq!(chart.computed_spreads.len(), 6);
+        let expected = ["n10", "n9", "n8", "n7", "n6", "n5"];
+        for (i, exp) in expected.iter().enumerate() {
+            assert_eq!(&chart.computed_spreads[i].0, exp);
+        }
+    }
+
+    #[test]
+    fn test_extension_boxplot_zero_size_files_excluded() {
+        // 3 non-zero + 5 zero-size files: only 3 valid samples (< 4), category skipped.
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let mut nodes = vec![FileNode::new(r_id, None, true, false, 0, 0)];
+        for i in 0..8u64 {
+            let f_id = pool.get_or_insert(format!("f{i}.log").as_bytes());
+            let mut node = FileNode::new(f_id, Some(0), false, false, 0, 0);
+            if i < 3 {
+                node.size = 100 * (i + 1);
+            }
+            nodes.push(node);
+        }
+
+        let dir_counts = precompute_dir_counts(&nodes);
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(dir_counts),
+        };
+
+        let mut chart = ExtensionBoxplotChart::new();
+        chart.compute(&snapshot);
+
+        assert!(chart.computed_spreads.is_empty());
+        assert!(chart.top_extensions.is_empty());
+    }
 }

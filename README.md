@@ -8,7 +8,7 @@
 
 [**eDirStat**](https://edirstat.com) is a modern, high-performance, cross-platform disk usage analyzer written in Rust. Inspired by legacy utilities like [WinDirStat](https://windirstat.net/), it leverages an immediate-mode graphical interface [`egui`](https://egui.rs/) to provide a real-time, interactive treemap visualization of your filesystem.
 
-Unlike traditional analyzers that crawl sequentially, **eDirStat** is engineered from the ground up for modern multi-core systems. It couples a highly optimized, work-stealing multithreaded directory walker with a zero-copy arena data structure. This allows you to scan millions of files, locate space-wasting files using a treemap diagram (among other plots), identify duplicate files, and save or load system snapshots in milliseconds using compressed snapshots.
+Unlike traditional analyzers that crawl sequentially, **eDirStat** is engineered from the ground up for modern multi-core systems. It couples a highly optimized, work-stealing multithreaded directory walker with a zero-copy arena data structure. This allows you to scan millions of files, locate space-wasting files using a treemap diagram (among other plots), identify duplicate files, and save or load system snapshots in milliseconds.
 
 [**Up to 2.8x speedup** vs `WinDirStat`](#vs-windirstat-v262)
 
@@ -59,9 +59,13 @@ Purchasing precompiled packages directly funds the engineering efforts required 
 ## 🚀 Key Features
 
 - ⚡ **Work-Stealing Multi-threading:** Powered by a lock-free task injector queue that keeps all CPU cores saturated during scanning-- inspired by `ripgrep`.
-- 🪟 **NTFS MFT Scanner (Windows):** Accesses raw NTFS physical handles to parse the Master File Table directly, bypassing OS filesystem bottlenecks for near-instantaneous drive indexing (requires administrative privileges).
+- 🪟 **NTFS MFT Scanner (Windows & Linux):** Accesses raw NTFS volumes to parse the Master File Table directly, bypassing OS filesystem bottlenecks for near-instantaneous drive indexing (requires administrative/root privileges). Exported `$MFT` files can also be parsed offline on any platform.
 - 👥 **7-Stage Deduplication Engine:** Safely identifies byte-for-byte identical files using cryptographically secure BLAKE3 hashing. It is hardlink-aware to protect shared filesystem links.
-- 📦 **Fast Compressed Snapshots:** Writes structured tree snapshots to disk with Zstd compression. Once loaded and decompressed, the flat binary representation is cast directly via `bytemuck`, eliminating parsing overhead. Cross-compatible on all Little-Endian platforms.
+- 🌍 **Full Localization:** Community-translated interface in 10 languages (English, German, Spanish, French, Italian, Dutch, Polish, Portuguese, Russian, and Turkish) with a built-in language selector.
+- 🎨 **Theme System:** System (auto-detected), Dark, Light, and High Contrast themes.
+- ⏹️ **Scan Control:** Cancel in-progress scans at any time, and restrict scans to a single filesystem (`-x`).
+- 🌐 **Browser Snapshot Viewer:** Explore saved `.edst` snapshots in the browser via the wasm build on [edirstat.com](https://edirstat.com).
+- 📦 **Fast Compressed Snapshots:** Writes structured tree snapshots to disk with Zstd compression in a compact columnar layout (v3) that decodes in milliseconds; legacy v2 snapshots remain readable. Cross-compatible on all little-endian platforms.
 - 📊 **Dynamic Treemap Visualization:** Features a responsive layout canvas with smooth HSL gradient scaling based on file extensions.
 - 🗂️ **Layout Modes and Plots:** Choose between the different layout modes, both featuring data visualizations that can be cycled between.
 - 📋 **Bulk Operations & Multi-Select:** Select multiple rows in the directory tree or deduplicator to execute batch trashing, deletion, or linking.
@@ -106,10 +110,20 @@ You can also pass a directory path as a positional argument to automatically lau
 ./target/release/edirstat /path/to/scan
 ```
 
+### Command-Line Reference
+
+```bash
+edirstat [path]                              # Scan a directory, or load a snapshot file
+edirstat /path --to mysnapshot               # Headless scan, saved to mysnapshot.edst.zst
+edirstat /path --to snap --no-compression    # Headless scan, uncompressed .edst output
+edirstat /path --benchmark                   # Headless traversal timing report
+edirstat /path -x                            # Restrict the scan to the same filesystem
+```
+
 ### Navigating the User Interface
 
 1. **Scan a Directory:**
-   Click the **📁 Scan Directory** button in the top menu bar to open a folder picker. Select the target drive or folder to initiate the scan.
+   Click the **📁 Scan Directory** button in the top menu bar to open the scan dialog, which lists detected drives and mount points for quick selection (or type a path directly). Scans can be cancelled while running.
 2. **Explore the Tree:**
    The left-hand panel displays a hierarchical directory explorer. You can expand/collapse folders using the `[+]`/`[-]` toggles. Use the **🔍 Filter** input bar to narrow down the view to matching folders or files.
 3. **Interact with the Treemap:**
@@ -126,6 +140,10 @@ You can also pass a directory path as a positional argument to automatically lau
    - **Copy Name:** Copies the name of the selected folder or file to the system clipboard.
    - **Copy Path:** Copies the absolute path of the selected folder or file to the system clipboard.
    - **Delete (Permanent):** Opens a safety dialog to permanently delete the target path from your disk.
+7. **Personalize the View:**
+   The **View** menu offers theme selection (System, Dark, Light, High Contrast), interface language, a configurable timestamp **Time Format**, and treemap border toggles. View preferences are saved automatically between sessions.
+8. **Keyboard Shortcuts:**
+   `Del` moves the selection to the trash; `Shift + Del` permanently deletes it (both support bypassing the confirmation dialog).
 
 ---
 
@@ -141,24 +159,25 @@ If you need to analyze a server or remote environment:
 
 ## ⚙️ Architectural Design & Internals
 
-### 1. Parallel Work-Stealing Walker (`src/traversal.rs`)
+### 1. Parallel Work-Stealing Walker (`crates/edirstat/src/engine/traversal.rs`)
 
 The traversal engine avoids the performance bottlenecks of standard recursive single-threaded walkers. It utilizes `crossbeam-deque` for task scheduling inspired by `ripgrep`:
 
 - **Workers & Stealers:** Each parallel thread operates on a local thread-safe FIFO task queue. When a thread runs out of directories to scan, it attempts to steal tasks from a global injector or peer worker queues.
 - **Cycle Detection:** Avoids infinite directory loops (caused by recursive symbolic links) by checking filesystem identity descriptors (`dev`/`ino` on Unix, and `volume_serial_number`/`file_index` on Windows) against an inherited stack of ancestors.
-- **Developer-Friendly Ignore Matching:** Evaluates file pathways against globally defined structures and localized directory-level `.gitignore` files using compiled `globset` configurations.
+- **Cooperative Cancellation:** In-progress scans can be cancelled cleanly; workers poll a shared cancel token while scanning.
+- **Virtual Filesystem Guard:** Scans rooted at `/` automatically skip virtual and mounted system directories (such as `/proc`, `/sys`, and `/dev`).
 - **Device Boundary Restrictions:** Restricts the scan to the primary mount point or device boundary to prevent unintended traversal of system directories (e.g., `/sys` or `/proc`).
 
-### 2. Lock-Free Snapshot Commit Loop (`src/coordinator.rs`)
+### 2. Lock-Free Snapshot Commit Loop (`crates/edirstat/src/engine/coordinator.rs`)
 
 To prevent traversal worker threads from blocking the UI rendering cycle, `edirstat` decouples directory scanning from interface updates through an event-driven coordinator model:
 
 - **The Coordinator:** Worker threads stream compressed structural events (`ScanEvent`) over a lock-free channel to a dedicated background Coordinator thread.
 - **Dynamic ID Map:** The Coordinator translates worker-local task identifiers to global array indexes in $O(1)$ amortized time.
-- **Atomic Snapshot Publishing:** Instead of locking a mutable tree, the GUI accesses an immutable `FileArenaSnapshot` read-only copy via `arc_swap`. The Coordinator issues updated snapshots to the GUI every 100 milliseconds during an active scan.
+- **Atomic Snapshot Publishing:** Instead of locking a mutable tree, the GUI accesses an immutable `FileArenaSnapshot` read-only copy via `arc_swap`. The Coordinator issues updated snapshots to the GUI every 100–1000 milliseconds during an active scan (tiered by tree size).
 
-### 3. Cache-Friendly Arena Representation (`src/arena.rs`)
+### 3. Cache-Friendly Arena Representation (`crates/edirstat-core/src/arena.rs`)
 
 To conserve memory and avoid pointer-chasing latency, the directory tree is flattened into a single contiguous array (arena):
 
@@ -173,29 +192,32 @@ To conserve memory and avoid pointer-chasing latency, the directory tree is flat
 - **Plain Old Data (POD):** The `FileNode` struct is annotated with `bytemuck::Pod` and `bytemuck::Zeroable`, strictly aligned to 8-byte boundaries.
 - **Compact String Pool:** Directory and file names are deduplicated and stored in a contiguous byte sequence (`StringPool`). Nodes reference these names via a lightweight `StringId` wrapper.
 
-### 4. Zstd-Compressed Snapshot Persistence (`src/persistence.rs`)
+### 4. Zstd-Compressed Snapshot Persistence (`crates/edirstat-core/src/snapshot.rs`)
 
-The `.edst` snapshot file layout features a Zstd-compressed payload matched to the in-memory arena:
+The current (v3) `.edst` snapshot layout stores the arena as compact columnar data, optionally wrapped in a transparent Zstd container (`.edst.zst`):
 
 ```text
 +-------------------------------------------------------------+
-|  Header (72 Bytes, Uncompressed)                            |
+|  Header (72 Bytes, Little-Endian)                           |
 |  - Magic: "EDST"                                            |
-|  - Version: u16                                             |
+|  - Version: u16 (v3; v2 legacy files still load)            |
 |  - Uncompressed Size: u64                                   |
 |  - Node Count: u64                                          |
 |  - String Pool Offset & Length                              |
 +-------------------------------------------------------------+
-|  Zstd Compressed Payload:                                   |
-|  - Array of FileNode Structs (Flat Binary Segment)          |
-|  - String Pool Data (Serialized Offsets + Packed UTF-8)     |
+|  Columnar Node Data (DFS pre-order)                         |
+|  - Control bytes (flags + timestamp shortcut bits)          |
+|  - Varint columns: name ids, sizes, zigzag timestamp deltas |
+|  - Varint file/child counts for directories                 |
+|  - String Pool (varint-framed packed UTF-8)                 |
 +-------------------------------------------------------------+
 ```
 
-- **Zstd Compression:** Minimizes the disk storage footprint of snapshot files while maintaining high read/write speeds.
-- **Zero-Parsing Deserialization:** Once decompressed into heap memory, the data is cast directly into a slice of `&[FileNode]` via `bytemuck`, avoiding costly parsing loops or node-by-node deserialization overhead.
+- **Zstd Compression:** Minimizes the disk storage footprint of snapshot files while maintaining high read/write speeds; the container is detected and unwrapped transparently on load. `--no-compression` writes a raw `.edst` without the wrapper.
+- **Columnar Varint Encoding:** Nodes are serialized field-by-field as LEB128 varint columns with zigzag delta-compressed timestamps, making snapshots significantly smaller and faster to encode/decode than the legacy flat-binary (v2) layout, which remains readable for backward compatibility.
+- **Cross-Platform Little-Endian:** All multi-byte fields are serialized little-endian, keeping snapshots portable across little-endian platforms.
 
-### 5. Multi-Stage Deduplication Engine (`src/stats/deduplicator.rs`)
+### 5. Multi-Stage Deduplication Engine (`crates/edirstat-gui/src/stats/deduplicator.rs`)
 
 <https://github.com/user-attachments/assets/a5743098-e88f-4fb7-bc0d-df073ed0615f>
 
@@ -416,6 +438,13 @@ Speedup (QDirStat / eDirStat): 6.60x
 > - Comparisons were conducted against **WinDirStat v2.6.2**, **WizTree v4.31**, and **QDirStat v2.0.01** under controlled testing conditions with primed system caches.
 > - eDirStat is an independent open-source utility and is not associated with, sponsored by, or endorsed by the trademark holders of those projects.
 > - Performance measurements depend heavily on hardware setup, filesystem fragmentation, operating system scheduling, and disk caching behavior; individual test results may vary.
+
+---
+
+## 💖 Contributors
+
+- **[@Lej77](https://github.com/Lej77)** — NTFS `$MFT` fixes and improvements, including Master File Table scanning of NTFS drives on Linux (#14) and MFT extension record support (#15).
+- **[@AlexanderSchuetz97](https://github.com/AlexanderSchuetz97)** — many feature requests, German translation review, and extensive bug testing.
 
 ---
 

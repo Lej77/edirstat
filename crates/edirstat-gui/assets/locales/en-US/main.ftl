@@ -180,6 +180,7 @@ type-file = File
 
 # Explorer Actions
 explorer-action-copy-path = 📋 Copy Path
+explorer-action-open-file = 📄 Open File
 explorer-action-open-manager = 🗁 Open Manager
 explorer-action-refresh-subtree = 🔄 Refresh Subtree
 explorer-action-move-trash = ♻ Move to Trash
@@ -203,6 +204,7 @@ extensions-hover-files = Files: { $count }
 op-up-one-level = Up One Level
 op-refresh-entire-scan = Refresh Entire Scan
 op-refresh-directory = Refresh Directory
+op-open-file = Open File
 op-open-file-manager = Open in File Manager
 op-open-terminal = Open Terminal Here
 op-copy-path = Copy Path
@@ -215,6 +217,8 @@ toast-already-root = Already at the root level
 toast-navigated-up = Navigated up one level
 toast-refreshing-scan = Refreshing entire scan...
 toast-refreshing-dir = Refreshing selected directory/directories...
+toast-opened-file = Opened: { $path }
+toast-failed-open-file = Failed to open file: { $error }
 toast-opened-manager = Opened in file manager: { $path }
 toast-failed-open-manager = Failed to open in file manager: { $error }
 toast-opened-terminal = Opened terminal at: { $path }

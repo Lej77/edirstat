@@ -23,11 +23,10 @@ atomic-progress = { version = "0.1.6", default-features = false, features = [
     "prettier-bytes",
 ] }
 compact_str = "0.10.0"
-eframe = "0.35.0"
-egui-notify = { version = "0.22.0", git = "https://github.com/xangelix/egui-notify.git", branch = "egui-0.35" }
-egui-table-kit = "0.5.5"
-egui_extras = { version = "0.35.0", features = ["image"] }
-egui_plot = "0.36.0"
+eframe = "0.36.1"
+egui-table-kit = "0.6.1"
+egui_extras = { version = "0.36.1", features = ["image"] }
+egui_plot = "0.37.0"
 fixedbitset = "0.5.7"
 fluent-zero = "0.1.4"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
@@ -39,6 +38,7 @@ rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
 smallvec = "1.15.2"
 strum = { version = "0.28.0", features = ["derive"] }
+sys-locale = { version = "0.3.2", features = ["js"] }
 toml = "1.1.4"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
@@ -56,20 +56,18 @@ web-sys = { version = "0.3", features = [
 # Native-only functionality: filesystem mutation, dedup hashing, desktop dialogs,
 # preferences persistence, and the online update checker.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-blake3 = "1.8.5"
+blake3 = "1.8.6"
 cli-or-gui = "0.1.1"
 directories = "6.0.0"
-egui-async = { version = "0.5", optional = true }
-open = "5.4.0"
+egui-async = { version = "0.6.0", optional = true }
+open = "5.4.1"
 rayon = "1.12.0"
 reqwest = { version = "0.13", features = [
     "rustls",
 ], default-features = false, optional = true }
 semver = { version = "1", optional = true }
 tracy-client = { version = "0.18.4", optional = true }
-sysinfo = { version = "0.39.6", default-features = false, features = [
-    "disk",
-] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["disk"] }
 trash = "5.2.6"
 
 [target.'cfg(target_family = "unix")'.dependencies]

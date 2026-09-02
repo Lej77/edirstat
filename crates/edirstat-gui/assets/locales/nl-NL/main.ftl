@@ -180,6 +180,7 @@ type-file = Bestand
 
 # Explorer Actions
 explorer-action-copy-path = 📋 Pad kopiëren
+explorer-action-open-file = 📄 Bestand openen
 explorer-action-open-manager = 🗁 Bestandsbeheer openen
 explorer-action-refresh-subtree = 🔄 Subboom vernieuwen
 explorer-action-move-trash = ♻ Naar prullenbak verplaatsen
@@ -203,6 +204,7 @@ extensions-hover-files = Bestanden: { $count }
 op-up-one-level = Niveau omhoog
 op-refresh-entire-scan = Volledige scan vernieuwen
 op-refresh-directory = Map vernieuwen
+op-open-file = Bestand openen
 op-open-file-manager = Openen in bestandsbeheer
 op-open-terminal = Terminal hier openen
 op-copy-path = Pad kopiëren
@@ -215,6 +217,8 @@ toast-already-root = Al op het hoogste niveau
 toast-navigated-up = Niveau omhoog genavigeerd
 toast-refreshing-scan = Volledige scan vernieuwen...
 toast-refreshing-dir = Geselecteerde map(pen) vernieuwen...
+toast-opened-file = Geopend: { $path }
+toast-failed-open-file = Openen van bestand mislukt: { $error }
 toast-opened-manager = Geopend in bestandsbeheer: { $path }
 toast-failed-open-manager = Openen in bestandsbeheer mislukt: { $error }
 toast-opened-terminal = Terminal geopend op: { $path }

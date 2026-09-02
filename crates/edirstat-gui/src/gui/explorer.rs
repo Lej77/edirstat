@@ -799,8 +799,27 @@ impl GuiApp {
             ui.painter().rect_filled(rect, 4.0, hover_color);
         }
 
-        // Handle selection on Left-Click or Right-Click (outside of the expand button)
-        if clicked {
+        let double_clicked = response.double_clicked()
+            || strip_response
+                .as_ref()
+                .is_some_and(egui::Response::double_clicked);
+
+        // Handle double-click, selection on Left-Click or Right-Click
+        if double_clicked {
+            if node.is_directory() {
+                if is_expanded {
+                    self.table_state.expanded_rows.remove(node_idx);
+                } else {
+                    self.table_state.expanded_rows.insert(node_idx);
+                }
+            } else {
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    let full_path = snapshot.get_full_path(node_idx);
+                    let _ = open::that(std::path::Path::new(&full_path));
+                }
+            }
+        } else if clicked {
             let modifiers = ui.input(|i| i.modifiers);
             self.table_state
                 .handle_row_selection(modifiers, node_idx as usize);
@@ -1703,6 +1722,31 @@ impl GuiApp {
                             ui.ctx().copy_text(cleaned_path.into_owned());
                         }
 
+                        // Opening the file directly in system default application is native-only
+                        if !is_dir && (crate::IS_NATIVE || !crate::HIDE_NA_UI) {
+                            let mut open_file_btn = ui
+                                .add_enabled_ui(crate::IS_NATIVE, |ui| {
+                                    draw_action_button(
+                                        ui,
+                                        &t!("explorer-action-open-file"),
+                                        egui::Color32::from_rgb(59, 130, 246), // Blue
+                                        true,
+                                    )
+                                })
+                                .inner;
+                            if !crate::IS_NATIVE {
+                                open_file_btn =
+                                    open_file_btn.on_disabled_hover_text(t!("web-not-available"));
+                            }
+                            if open_file_btn.clicked() {
+                                #[cfg(not(target_family = "wasm"))]
+                                {
+                                    let path = std::path::Path::new(&full_path);
+                                    let _ = open::that(path);
+                                }
+                            }
+                        }
+
                         // Opening the system file manager is native-only
                         if crate::IS_NATIVE || !crate::HIDE_NA_UI {
                             let mut open_btn = ui
@@ -2017,5 +2061,83 @@ pub fn compare_nodes_by_column(
             // Fallback (Percentage, etc.)
             node_a.size.cmp(&node_b.size)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cmp::Ordering, sync::Arc};
+
+    use super::compare_nodes_by_column;
+    use crate::arena::{FileArenaSnapshot, FileNode, NodeStorage, StringPool};
+
+    #[test]
+    fn test_compare_nodes_by_column() {
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"/");
+        let alpha_id = pool.get_or_insert(b"alpha");
+        let beta_id = pool.get_or_insert(b"Beta");
+        let gamma_id = pool.get_or_insert(b"gamma.txt");
+
+        let mut alpha = FileNode::new(alpha_id, Some(0), true, false, 1000, 10);
+        alpha.size = 100;
+        alpha.file_count = 5;
+        let mut beta = FileNode::new(beta_id, Some(0), true, false, 500, 20);
+        beta.size = 200;
+        beta.file_count = 3;
+        let mut gamma = FileNode::new(gamma_id, Some(0), false, false, 2000, 30);
+        gamma.size = 300;
+
+        let mut nodes = vec![
+            FileNode::new(r_id, None, true, false, 0, 0),
+            alpha,
+            beta,
+            gamma,
+        ];
+        nodes[0].first_child = 1;
+        nodes[1].next_sibling = 2;
+        nodes[2].next_sibling = 3;
+
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(vec![]),
+        };
+
+        // Column 0: name ordering is case-sensitive (byte-wise), so "Beta"
+        // sorts before "alpha".
+        assert_eq!(compare_nodes_by_column(&snapshot, 0, 2, 1), Ordering::Less);
+        assert_eq!(
+            compare_nodes_by_column(&snapshot, 0, 1, 2),
+            Ordering::Greater
+        );
+
+        // Column 2: size.
+        assert_eq!(compare_nodes_by_column(&snapshot, 2, 1, 2), Ordering::Less);
+        assert_eq!(
+            compare_nodes_by_column(&snapshot, 2, 3, 2),
+            Ordering::Greater
+        );
+
+        // Column 7: modified timestamp.
+        assert_eq!(
+            compare_nodes_by_column(&snapshot, 7, 1, 2),
+            Ordering::Greater
+        );
+        assert_eq!(compare_nodes_by_column(&snapshot, 7, 2, 3), Ordering::Less);
+
+        // Column 4: file count; non-directories count as 0.
+        assert_eq!(
+            compare_nodes_by_column(&snapshot, 4, 1, 2),
+            Ordering::Greater
+        );
+        assert_eq!(compare_nodes_by_column(&snapshot, 4, 3, 1), Ordering::Less);
+
+        // Out-of-range column index falls back to size ordering.
+        assert_eq!(compare_nodes_by_column(&snapshot, 99, 1, 2), Ordering::Less);
+        assert_eq!(
+            compare_nodes_by_column(&snapshot, 99, 2, 1),
+            Ordering::Greater
+        );
     }
 }

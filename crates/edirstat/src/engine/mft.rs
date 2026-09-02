@@ -1596,3 +1596,66 @@ pub fn is_ntfs(path: &Path) -> bool {
         .iter()
         .any(|valid| disk.file_system().eq_ignore_ascii_case(valid))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_nt_time_to_unix_zero_and_pre_epoch() {
+        assert_eq!(nt_time_to_unix(0), 0);
+        // Exactly at the 1601 -> 1970 epoch offset is unix epoch 0.
+        assert_eq!(nt_time_to_unix(11_644_473_600 * 10_000_000), 0);
+        // One 100ns tick before the offset still maps back to 0.
+        assert_eq!(nt_time_to_unix(11_644_473_600 * 10_000_000 - 1), 0);
+    }
+
+    #[test]
+    fn test_nt_time_to_unix_known_vector_and_saturation() {
+        // NT timestamp for unix epoch + 1000 seconds.
+        assert_eq!(nt_time_to_unix((11_644_473_600 + 1000) * 10_000_000), 1000);
+        // Values beyond year 2106 saturate to u32::MAX.
+        assert_eq!(nt_time_to_unix(u64::MAX), u32::MAX);
+    }
+
+    /// An empty (0-byte) exported `$MFT` file yields zero records and must error out.
+    #[test]
+    fn test_try_scan_mft_empty_file_is_invalid_data() -> Result<(), crate::EdirstatError> {
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_mft_empty_file");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir)?;
+
+        let mft_path = temp_dir.join("$MFT");
+        std::fs::write(&mft_path, b"")?;
+
+        let scan_cancel = Arc::new(AtomicBool::new(false));
+        let (event_tx, _event_rx) = crossbeam::channel::unbounded();
+        let stats = TraversalStats::default();
+
+        let result = try_scan_mft(&mft_path, &scan_cancel, &event_tx, &stats);
+        assert!(
+            matches!(result, Err(crate::EdirstatError::Io(ref e)) if e.kind() == std::io::ErrorKind::InvalidData),
+            "expected Io/InvalidData error for empty $MFT file, got {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+
+    /// A temp dir on a typical Linux dev filesystem (btrfs/ext4/tmpfs) is not NTFS.
+    #[test]
+    fn test_is_ntfs_temp_dir_is_false() -> Result<(), crate::EdirstatError> {
+        let temp_dir = std::env::current_dir()?
+            .join("target")
+            .join("test_mft_is_ntfs");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir)?;
+
+        assert!(!is_ntfs(&temp_dir));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        Ok(())
+    }
+}

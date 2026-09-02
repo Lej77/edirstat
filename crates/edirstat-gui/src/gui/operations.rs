@@ -222,6 +222,74 @@ impl TableOperation for RefreshDirectoryOp {
     }
 }
 
+// --- Open File ---
+#[derive(Debug)]
+pub struct OpenFileOp {
+    #[allow(dead_code)]
+    shared_state: Arc<SharedState>,
+}
+
+impl OpenFileOp {
+    #[must_use]
+    pub const fn new(shared_state: Arc<SharedState>) -> Self {
+        Self { shared_state }
+    }
+}
+
+impl TableOperation for OpenFileOp {
+    fn name(&self) -> Cow<'_, str> {
+        t!("op-open-file")
+    }
+
+    fn icon(&self) -> &'static str {
+        "↗"
+    }
+
+    fn enabled(&self) -> TableOperationEnablement {
+        TableOperationEnablement::OneSelected
+    }
+
+    fn evaluate_enablement(
+        &self,
+        state: &egui_table_kit::state::TableState,
+    ) -> (bool, Cow<'static, str>) {
+        if crate::IS_NATIVE {
+            (state.selected_rows.len() == 1, t!("operation-one"))
+        } else {
+            (false, t!("web-not-available"))
+        }
+    }
+
+    fn exec(&mut self, ctx: &mut OperationContext<'_, '_>) -> Result<(), TableError> {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let snapshot = get_snapshot(&self.shared_state);
+
+            if let Some(idx) = ctx.data.selected_rows.iter().next() {
+                let path_str = snapshot.get_full_path(idx);
+                let path = Path::new(&path_str);
+                match open::that(path) {
+                    Ok(()) => {
+                        let path_lossy = path.to_string_lossy();
+                        let cleaned_path = crate::arena::clean_unc_path(&path_lossy);
+                        crate::gui::toast_info(
+                            t!("toast-opened-file", { "path" => cleaned_path.as_ref() }),
+                        );
+                    }
+                    Err(e) => {
+                        let err_msg = e.to_string();
+                        crate::gui::toast_error(
+                            t!("toast-failed-open-file", { "error" => err_msg.as_str() }),
+                        );
+                    }
+                }
+            }
+        }
+        let _ = ctx;
+        Ok(())
+    }
+}
+
 // --- Open in File Manager ---
 #[derive(Debug)]
 pub struct OpenFileManagerOp {
@@ -230,6 +298,7 @@ pub struct OpenFileManagerOp {
 }
 
 impl OpenFileManagerOp {
+    #[must_use]
     pub const fn new(shared_state: Arc<SharedState>) -> Self {
         Self { shared_state }
     }

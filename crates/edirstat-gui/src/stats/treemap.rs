@@ -1005,4 +1005,144 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].node_idx, 1);
     }
+
+    #[test]
+    fn test_treemap_area_proportional_to_size() {
+        // Child areas scale with size: 300 vs 100 in a 400x400 rect → ~3:1 block areas.
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let f1_id = pool.get_or_insert(b"big.bin");
+        let f2_id = pool.get_or_insert(b"small.bin");
+
+        let mut nodes = vec![
+            FileNode::new(r_id, None, true, false, 0, 0),
+            FileNode::new(f1_id, Some(0), false, false, 0, 0),
+            FileNode::new(f2_id, Some(0), false, false, 0, 0),
+        ];
+        nodes[0].first_child = 1;
+        nodes[1].next_sibling = 2;
+        nodes[0].size = 400;
+        nodes[1].size = 300;
+        nodes[2].size = 100;
+
+        let dir_counts = precompute_dir_counts(&nodes);
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(dir_counts),
+        };
+
+        let mut chart = TreemapChart::new();
+        chart.last_rect =
+            Rect::from_min_size(eframe::egui::Pos2::ZERO, eframe::egui::vec2(400.0, 400.0));
+        let blocks = chart.compute(&snapshot);
+
+        assert_eq!(blocks.len(), 2);
+        let area_of = |idx: u32| -> f32 {
+            blocks
+                .iter()
+                .find(|b| b.node_idx == idx)
+                .map_or(0.0, |b| b.rect.width() * b.rect.height())
+        };
+        let big = area_of(1);
+        let small = area_of(2);
+        assert!(big > 0.0 && small > 0.0);
+        let ratio = big / small;
+        assert!(
+            (ratio - 3.0).abs() / 3.0 < 0.05,
+            "area ratio {ratio} deviates from 3:1"
+        );
+    }
+
+    #[test]
+    fn test_treemap_zero_size_child_gets_no_block() {
+        // Zero-size children are excluded from the layout entirely.
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let f1_id = pool.get_or_insert(b"f1.png");
+        let f2_id = pool.get_or_insert(b"f2.png");
+
+        let mut nodes = vec![
+            FileNode::new(r_id, None, true, false, 0, 0),
+            FileNode::new(f1_id, Some(0), false, false, 0, 0),
+            FileNode::new(f2_id, Some(0), false, false, 0, 0),
+        ];
+        nodes[0].first_child = 1;
+        nodes[1].next_sibling = 2;
+        nodes[0].size = 100;
+        nodes[1].size = 100;
+        nodes[2].size = 0;
+
+        let dir_counts = precompute_dir_counts(&nodes);
+        let snapshot = FileArenaSnapshot {
+            nodes: Arc::new(NodeStorage::Owned(nodes)),
+            string_pool: Arc::new(pool),
+            dir_counts: Arc::new(dir_counts),
+        };
+
+        let mut chart = TreemapChart::new();
+        chart.last_rect =
+            Rect::from_min_size(eframe::egui::Pos2::ZERO, eframe::egui::vec2(100.0, 100.0));
+        let blocks = chart.compute(&snapshot);
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].node_idx, 1);
+        assert!(blocks.iter().all(|b| b.node_idx != 2));
+    }
+
+    #[allow(clippy::float_cmp)]
+    #[test]
+    fn test_worst_aspect_ratio_degenerate_inputs() {
+        assert_eq!(worst_aspect_ratio(&[], 10.0), f64::INFINITY);
+        assert_eq!(worst_aspect_ratio(&[10.0], 0.0), f64::INFINITY);
+        assert_eq!(worst_aspect_ratio(&[10.0], -5.0), f64::INFINITY);
+        assert_eq!(worst_aspect_ratio(&[0.0, 0.0], 5.0), f64::INFINITY);
+    }
+
+    #[test]
+    fn test_get_selection_roots_oob_and_disjoint() {
+        // root(0) → dir_a(1) → file(3); root(0) → dir_b(2).
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let a_id = pool.get_or_insert(b"dir_a");
+        let b_id = pool.get_or_insert(b"dir_b");
+        let f_id = pool.get_or_insert(b"file");
+        let nodes = vec![
+            FileNode::new(r_id, None, true, false, 0, 0),
+            FileNode::new(a_id, Some(0), true, false, 0, 0),
+            FileNode::new(b_id, Some(0), true, false, 0, 0),
+            FileNode::new(f_id, Some(1), false, false, 0, 0),
+        ];
+
+        let mut selected = std::collections::HashSet::new();
+        selected.insert(1);
+        selected.insert(2);
+        selected.insert(3);
+        selected.insert(999_999); // out of bounds — must be skipped, not panic
+
+        let roots = get_selection_roots(&nodes, &selected);
+        assert_eq!(roots.len(), 2);
+        assert!(roots.contains(&1));
+        assert!(roots.contains(&2));
+        // Node 3 sits under selected node 1, so it is not a root.
+        assert!(!roots.contains(&3));
+    }
+
+    #[test]
+    fn test_is_descendant_edge_cases() {
+        let mut pool = StringPool::new();
+        let r_id = pool.get_or_insert(b"root");
+        let a_id = pool.get_or_insert(b"dir_a");
+        let b_id = pool.get_or_insert(b"dir_b");
+        let nodes = vec![
+            FileNode::new(r_id, None, true, false, 0, 0),
+            FileNode::new(a_id, Some(0), true, false, 0, 0),
+            FileNode::new(b_id, Some(0), true, false, 0, 0),
+        ];
+
+        assert!(is_descendant(&nodes, 1, 1)); // reflexive
+        assert!(!is_descendant(&nodes, 1, 2)); // not a descendant of its own sibling
+        assert!(!is_descendant(&nodes, 2, 1));
+        assert!(!is_descendant(&nodes, 999_999, 0)); // out-of-bounds child → false
+    }
 }

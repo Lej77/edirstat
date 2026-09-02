@@ -229,4 +229,59 @@ mod tests {
         let t = SystemTime::UNIX_EPOCH - Duration::from_secs(98765);
         assert_eq!(system_time_to_unix_timestamp(t), 0);
     }
+
+    #[test]
+    fn test_common_time_format_all_complete_and_unique() {
+        assert_eq!(CommonTimeFormat::ALL.len(), 10);
+
+        // Every enum variant is listed in ALL.
+        for variant in [
+            CommonTimeFormat::Iso8601,
+            CommonTimeFormat::Iso8601T,
+            CommonTimeFormat::EuropeanSlash,
+            CommonTimeFormat::EuropeanDot,
+            CommonTimeFormat::UsSlash,
+            CommonTimeFormat::EuropeanShort,
+            CommonTimeFormat::DotSeparated,
+            CommonTimeFormat::LongMonthName,
+            CommonTimeFormat::UnixTimestamp,
+            CommonTimeFormat::DateOnly,
+        ] {
+            assert!(CommonTimeFormat::ALL.contains(&variant));
+        }
+
+        // Labels are unique and every strftime string is non-empty.
+        let mut labels = std::collections::HashSet::new();
+        for variant in CommonTimeFormat::ALL {
+            assert!(labels.insert(variant.label()));
+            assert!(!variant.as_str().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_time_format_default_and_custom_format() {
+        assert_eq!(
+            TimeFormat::default(),
+            TimeFormat("%Y-%m-%d %H:%M:%S".to_string())
+        );
+
+        let custom = TimeFormat("%Y".to_string());
+        assert_eq!(custom, custom.clone());
+        // A custom strftime string passes straight through to chrono.
+        assert_eq!(format_epoch(1_704_067_200, &custom), "2024");
+    }
+
+    #[test]
+    fn test_format_epoch_iso8601_t_separator() {
+        let formatted = format_epoch(1_704_067_200, &tf(CommonTimeFormat::Iso8601T));
+        assert_eq!(formatted, "2024-01-01T00:00:00");
+        assert!(formatted.contains('T'));
+    }
+
+    #[test]
+    fn test_format_epoch_date_only_no_time_component() {
+        let formatted = format_epoch(1_704_067_200, &tf(CommonTimeFormat::DateOnly));
+        assert_eq!(formatted, "2024-01-01");
+        assert!(!formatted.contains(':'));
+    }
 }

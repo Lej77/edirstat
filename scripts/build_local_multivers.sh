@@ -8,13 +8,18 @@ set -Eeuo pipefail
 TARGET_CPUS="${TARGET_CPUS:-x86-64-v2 x86-64-v3 x86-64-v4 znver3 znver4 znver5 skylake alderlake}"
 MULTIVERS_ZSTD_LEVEL="${MULTIVERS_ZSTD_LEVEL:-20}"
 
-TARGETS="x86_64-unknown-linux-gnu x86_64-pc-windows-gnu"
+TARGETS="${TARGETS:-x86_64-unknown-linux-gnu x86_64-pc-windows-gnu}"
 PKG_NAME="edirstat"
 BIN_NAME="edirstat"
 CRATE_SUBDIR="runner"
 
 PROJECT_DIR="$(pwd)"
 WRAPPER_TMP=""
+
+# Pin the toolchain for any cargo invocation outside this repository (the
+# runner wrapper builds in a mktemp dir): rust-toolchain.toml only applies
+# inside the repo, and CI containers may have no rustup default toolchain.
+export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-$(rustup show active-toolchain | cut -d' ' -f1)}"
 
 # Cleanup trap to ensure we don't leave artifacts laying around locally
 trap '[[ -n "${WRAPPER_TMP:-}" ]] && rm -rf "$WRAPPER_TMP"; rm -f "${PROJECT_DIR}/multivers_manifest.json" "${PROJECT_DIR}/builds_absolute.json"' EXIT
@@ -53,7 +58,10 @@ for TARGET in $TARGETS; do
 
     # -------------------------------------------------------------------------
     # 2. Build inner binaries (Matrix step equivalent)
+    #    Skipped by combine jobs (MULTIVERS_SKIP_VARIANTS=1), which instead
+    #    reuse variant binaries already present in target/<target>/release/.
     # -------------------------------------------------------------------------
+    if [[ -z "${MULTIVERS_SKIP_VARIANTS:-}" ]]; then
     for CPU in $TARGET_CPUS; do
         echo "-----------------------------------------------------------"
         echo "🔨 Compiling for CPU: $CPU"
@@ -73,6 +81,15 @@ for TARGET in $TARGETS; do
         # Move and append the CPU suffix and correct executable extension
         mv "${OUT_DIR}/${BIN_NAME}${EXE_EXT}" "${OUT_DIR}/${BIN_NAME}-${CPU}${EXE_EXT}"
     done
+    fi
+
+    if [[ -n "${MULTIVERS_SKIP_WRAPPER:-}" ]]; then
+        echo "==========================================================="
+        echo "✅ Success! Variant binaries available in:"
+        echo "   $OUT_DIR"
+        echo "==========================================================="
+        continue
+    fi
 
     # -------------------------------------------------------------------------
     # 3. Generate Manifest

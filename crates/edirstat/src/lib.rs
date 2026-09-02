@@ -26,7 +26,13 @@
 #![allow(clippy::crate_in_macro_def)]
 #![allow(clippy::too_many_lines)]
 // Docs
-#![doc = include_str!("../README.md")]
+//! eDirStat — a fast, cross-platform disk usage analyzer and deduplicator.
+//!
+//! This crate is the native application: the work-stealing traversal engine
+//! (including the NTFS `$MFT` fast path on Windows and Linux), the CLI, and the
+//! desktop GUI binary. See the [repository](https://github.com/xangelix/edirstat)
+//! for full documentation and the companion crates `edirstat-core` and
+//! `edirstat-gui`.
 // --- Feature Gates ---
 #![cfg_attr(all(windows, not(feature = "stable")), feature(windows_by_handle))]
 
